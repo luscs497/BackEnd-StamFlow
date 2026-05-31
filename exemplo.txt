@@ -1,0 +1,48 @@
+Banco de Dados Postgresql
+Python (backend)
+
+- 
+
+Porta com fechadura (15 minutos - fechadura muda)
+
+- 
+
+Ligo pro dono da casa que é o Refresh Token -> me da outra chave (outro access token) compatível
+Frondend (JS)
+
+
+
+JWT Secret Key
+
+Create User {
+    Email
+    Senha
+}
+
+Senha -> Algoritmo complexo -> 7E3Y0971H9UGH7H278HGBUH2BUFUIPBH8W99B0FU
+
+Login {
+    Email
+    Senha != 7E3Y0971H9UGH7H278HGBUH2BUFUIPBH8W99B0FU
+}
+
+Um sistema que fornece APIs: publicas ou privadas
+privadas -> token de segurança (permissão)
+
+Dois tokens
+Um chamado de Access Token -> 10-15 minutos: principal
+Outro chamado de Refresh Token -> 10 dias 
+
+HttpsCookiesOnly
+
+
+Login {
+    entro numa sessão do site (tempo que ele vai estar aberto)
+    refresh token e access token
+}
+
+
+
+
+
+

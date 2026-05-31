@@ -1,0 +1,409 @@
+# StamFlow — Backend
+
+Backend da plataforma **StamFlow**, um sistema que monitora a **ergonomia** e o **humor** de usuários em frente ao computador (via análise por webcam com o MediaPipe, no cliente) e consolida tudo num indicador exclusivo de bem-estar produtivo: a **Stamina**.
+
+As métricas coletadas alimentam dashboards em tempo real e relatórios de longo prazo, atendendo dois modelos de negócio:
+
+- **B2C (Individual):** foco no autocuidado preventivo do usuário avulso.
+- **B2B (Corporativo):** permite que empresas acompanhem o bem-estar coletivo dos colaboradores, fornecendo insumos para RH e gestão prevenirem o burnout.
+
+---
+
+## Sumário
+
+- [Stack](#stack)
+- [Arquitetura](#arquitetura)
+- [Atores e permissões](#atores-e-permissões)
+- [Modelo de dados](#modelo-de-dados)
+- [Fluxos principais](#fluxos-principais)
+- [Endpoints da API](#endpoints-da-api)
+- [Configuração e execução](#configuração-e-execução)
+- [Variáveis de ambiente](#variáveis-de-ambiente)
+- [Migrações](#migrações)
+- [Pontos de atenção](#pontos-de-atenção)
+- [Estrutura de pastas](#estrutura-de-pastas)
+
+---
+
+## Stack
+
+| Camada | Tecnologia |
+|---|---|
+| Linguagem | Python |
+| Framework web | FastAPI |
+| ORM | SQLAlchemy 2.0 (modo assíncrono) |
+| Driver de banco | asyncpg (app) / psycopg2 (migrações) |
+| Banco de dados | PostgreSQL |
+| Migrações | Alembic |
+| Validação | Pydantic v2 + pydantic-settings |
+| Autenticação | JWT (python-jose) + cookies HttpOnly |
+| Hashing de senha | bcrypt (via passlib) |
+| Pagamentos | Mercado Pago (assinaturas via `preapproval`) |
+| E-mail | fastapi-mail (SMTP) |
+| Geração de relatórios | ReportLab (PDF) + CSV nativo |
+| Servidor ASGI | Uvicorn |
+
+---
+
+## Arquitetura
+
+O projeto segue uma separação de responsabilidades em camadas, mantendo as rotas finas e concentrando a lógica de negócio nos services.
+
+```
+Requisição HTTP
+      │
+      ▼
+┌─────────────┐     valida entrada/saída     ┌─────────────┐
+│   Routes    │ ───────────────────────────► │   Schemas   │
+│  (api/...)  │                              │  (Pydantic) │
+└──────┬──────┘                              └─────────────┘
+       │ injeta autenticação/autorização
+       ▼
+┌─────────────┐
+│    Deps     │  get_current_user / get_current_{client,manager,company}
+│ (api/deps)  │  check_active_subscription / verify_admin_token / get_mp_sdk
+└──────┬──────┘
+       │ delega regra de negócio
+       ▼
+┌─────────────┐     persiste/consulta        ┌─────────────┐
+│  Services   │ ───────────────────────────► │   Models    │
+│ (services/) │                              │ (SQLAlchemy)│
+└─────────────┘                              └──────┬──────┘
+                                                    ▼
+                                              PostgreSQL
+```
+
+- **`app/api/routes/`** — define os endpoints; cada arquivo é um router montado em `app/api/router.py`.
+- **`app/services/`** — toda a lógica de negócio, em classes com métodos estáticos (`AuthService`, `SubscriptionService`, `WebhookService`, `ReportService`, `InviteService`, etc.).
+- **`app/models/`** — entidades SQLAlchemy.
+- **`app/schemas/`** — modelos Pydantic de entrada e saída.
+- **`app/core/`** — configuração (`config.py`), segurança/JWT (`security.py`).
+- **`app/db/`** — engine assíncrona e `Base` declarativa.
+
+---
+
+## Atores e permissões
+
+O sistema tem quatro perfis. Note que **Admin não é uma tabela** — é um acesso protegido por um token secreto enviado no header `X-Admin-Token`, usado em rotas críticas (cadastro de empresa, gestão de planos, etc.).
+
+| Ator | Descrição | Pode |
+|---|---|---|
+| **Company** | Empresa com CNPJ. Topo da hierarquia B2B. | Gerenciar assinatura corporativa, convidar gestores e colaboradores, ver toda a equipe, exportar relatórios. |
+| **Manager** | Gestor convidado pela empresa. | Ver/gerenciar seus colaboradores subordinados, convidar **apenas colaboradores**, responder tickets, ver dashboard da sub-equipe. |
+| **Client** | Modelo único que representa tanto o **usuário avulso (B2C)** quanto o **colaborador (B2B)**. | Ver dashboard próprio, gerenciar dados, abrir tickets (apenas colaboradores vinculados a empresa). |
+| **Admin** | Operador do sistema (via `X-Admin-Token`). | Cadastrar empresas, gerenciar planos de assinatura. |
+
+A distinção entre avulso e colaborador no model `Client` se dá pelos campos `company_id` / `manager_id`: se ambos nulos, é avulso; se preenchidos, é colaborador.
+
+A propriedade `active_subscription` do `Client` aplica um *fallback* esperto: retorna a assinatura própria, se existir; caso contrário, a assinatura da empresa à qual ele pertence.
+
+---
+
+## Modelo de dados
+
+Principais tabelas:
+
+- **`companies`** — dados cadastrais da empresa (CNPJ, razão social, etc.).
+- **`managers`** — gestores, sempre vinculados a uma empresa (`company_id`).
+- **`clients`** — usuários avulsos e colaboradores; `company_id` e `manager_id` opcionais.
+- **`client_tokens`** — refresh tokens dos clientes, armazenados como hash SHA-256, com user agent, IP (tipo `INET`), expiração e flag de revogação.
+- **`client_achievements`** — contadores agregados de exercícios e pausas por cliente.
+- **`daily_reports`** — relatório diário por cliente; guarda as métricas em **JSONB** (`metrics`), tempo de uso em segundos e contadores de pausas/exercícios.
+- **`tickets`** / **`ticket_messages`** — sistema de chamados entre colaborador e gestor.
+- **`subscription_plans`** — catálogo de planos (tipo individual/corporativo, período, preço em centavos, soft delete via `is_active`).
+- **`subscriptions`** — assinatura vinculada a um client **ou** a uma company, com status, datas, quantidade de licenças e ID da assinatura no Mercado Pago.
+- **`invites`** — convites com token único, papel (manager/employee), status e expiração.
+- **`webhook_logs`** — log de webhooks do Mercado Pago, com constraint de unicidade `(topic, resource_id, status)` para idempotência.
+
+### Enums relevantes
+
+- `SubscriptionStatus`: `TRIALING`, `ACTIVE`, `OVERDUE`, `UNPAID`, `CANCELED`, `INCOMPLETE`
+- `PlanType`: `individual`, `corporative`
+- `PlanPeriod`: `monthly`, `quarterly`, `semiannual`, `annual`
+- `InviteRole`: `manager`, `employee` · `InviteStatus`: `pending`, `accepted`, `refused`
+- `TicketStatus`: `aberto`, `em_andamento`, `concluido`
+
+### Cálculo da Stamina
+
+A Stamina é uma nota de 0 a 100 calculada a partir das métricas diárias:
+
+- **Postura** (peso **0,7**): média da qualidade de ombro, cabeça, rotação e coluna.
+- **Emoção** (peso **0,3**): média da distribuição de humor (feliz, neutro, triste, irritado).
+
+Cada estado é pontuado (`perfeito` = 1,0 · `bom` = 0,75 · `ruim` = 0,35 · `crítico` = 0) e ponderado pela frequência. O rótulo final vai de **Crítico** a **Excelente**.
+
+---
+
+## Fluxos principais
+
+### Autenticação
+
+- Login tenta autenticar na ordem **client → manager → company**.
+- Emite **access token** (curta duração) e **refresh token** (longa duração) como **cookies HttpOnly**, com fallback para o header `Authorization` (útil em testes).
+- Para clientes, o refresh token é persistido como **hash SHA-256** em `client_tokens`, permitindo **revogação** no logout e verificação no refresh.
+- Recuperação de senha por e-mail, com token JWT temporário (15 min) do tipo `reset`.
+
+### Convites e limite de vagas
+
+- Tokens de convite gerados com `secrets.token_urlsafe(32)`, válidos por 7 dias.
+- Envio **individual**, **em lote** ou por **upload de CSV**.
+- Antes de convidar, valida o limite de licenças: `can_add_manager` / `can_add_employee` somam **membros atuais + convites pendentes** e comparam com o que foi comprado na assinatura.
+- Gestor **nunca** pode convidar outro gestor — apenas a empresa.
+
+### Assinaturas e pagamentos (Mercado Pago)
+
+- Checkout cria um `preapproval` no Mercado Pago e retorna o `init_point` (link de pagamento).
+- Reaproveita assinaturas `INCOMPLETE` quando possível, evitando duplicatas.
+- As chamadas ao SDK do Mercado Pago (síncrono) rodam em thread separada via `asyncio.to_thread` (`mp_call`), para não bloquear o event loop.
+- Upgrade/downgrade e alteração de quantidade de licenças recalculam preço e atualizam o `preapproval`.
+
+### Webhooks
+
+- Assinatura **HMAC-SHA256** validada com janela de tempo (proteção contra replay) e `hmac.compare_digest` (proteção contra timing attack).
+- **Idempotência** garantida por consulta prévia (`already_processed`) e pela constraint única em `webhook_logs`.
+- Responsabilidades separadas: o tópico **`preapproval`** ativa/cancela o *status* da assinatura; o tópico **`payment`** é o único que altera a `end_date` — isso evita dobrar o período de validade, já que o Mercado Pago envia os dois webhooks quase simultaneamente no momento da assinatura.
+
+### Relatórios
+
+- `sync` acumula métricas no JSONB do relatório do dia (soma recursiva).
+- Dashboards individual e de equipe, com distribuições de postura/humor, melhor/pior dia e engajamento.
+- Exportação em **CSV** (separador `;`, amigável ao Excel pt-BR) e **PDF** (ReportLab).
+
+---
+
+## Endpoints da API
+
+Prefixos definidos em `app/api/router.py`. Resumo dos principais:
+
+### `/auth`
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/auth/register` | Cadastro de cliente (avulso ou via convite) |
+| POST | `/auth/login` | Login (retorna cookies) |
+| POST | `/auth/refresh` | Renova o access token |
+| POST | `/auth/logout` | Encerra a sessão (revoga refresh) |
+| GET | `/auth/me` | Dados do usuário autenticado |
+| PUT | `/auth/me` | Atualiza dados próprios |
+| POST | `/auth/forgot-password` | Solicita recuperação de senha |
+| DELETE | `/auth/{client_id}` | Exclui um cliente (empresa/gestor dono) |
+| DELETE | `/auth/bulk` | Exclusão em massa de clientes |
+
+> Há também `/auth/forgot-password` e `/auth/reset-password` definidos diretamente em `main.py`.
+
+### `/company`
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/company/register` | Cadastra empresa · **🔒 Admin** |
+| GET | `/company/` | Dados da empresa logada |
+| GET | `/company/all` | Lista todas as empresas · **🔒 Admin** |
+| PATCH | `/company/update` | Atualiza dados da empresa |
+| GET | `/company/team` | Lista gestores + colaboradores |
+| DELETE | `/company/{company_id}` | Remove empresa · **🔒 Admin** |
+
+### `/manager`
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/manager/register` | Cadastro de gestor (via convite) |
+| GET | `/manager/` | Dados do gestor logado |
+| PATCH | `/manager/update` | Atualiza dados do gestor |
+| GET | `/manager/team` | Lista colaboradores subordinados |
+| DELETE | `/manager/{manager_id}` | Remove gestor |
+
+### `/invite`
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/invite/register` | Envia um convite |
+| POST | `/invite/register/bulk` | Envia convites em lote |
+| POST | `/invite/upload` | Envia convites via CSV |
+| GET | `/invite/invites` | Lista convites |
+| GET | `/invite/{invite_id}` | Detalha um convite |
+| DELETE | `/invite/{invite_id}` | Remove um convite |
+| DELETE | `/invite/bulk` | Remoção em massa |
+
+### `/subscription` e `/subscription_plan`
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/subscription/checkout/subscribe` | Inicia checkout (Mercado Pago) |
+| GET | `/subscription/my-subscription` | Assinatura atual |
+| PATCH | `/subscription/update` | Upgrade/downgrade/licenças |
+| DELETE | `/subscription/{subscription_id}` | Cancela assinatura |
+| POST | `/subscription_plan/register` | Cria plano · **🔒 Admin** |
+| GET | `/subscription_plan/plans` | Lista planos ativos |
+| GET | `/subscription_plan/{plan_id}` | Detalha plano |
+| PATCH | `/subscription_plan/update/{plan_id}` | Atualiza plano · **🔒 Admin** |
+| DELETE | `/subscription_plan/{plan_id}` | Soft delete · **🔒 Admin** |
+
+### `/tickets`
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/tickets/` | Abre ticket (colaborador) |
+| GET | `/tickets/my-tickets` | Tickets do cliente |
+| GET | `/tickets/company-tickets` | Tickets da empresa (gestor) |
+| PUT | `/tickets/{ticket_id}/message` | Edita última mensagem |
+| PATCH | `/tickets/{ticket_id}/status` | Altera status |
+| POST | `/tickets/{ticket_id}/reply` | Responde ticket |
+| DELETE | `/tickets/{ticket_id}` | Remove ticket |
+
+### `/reports`
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/reports/sync` | Sincroniza métricas do dia |
+| POST | `/reports/achievement` | Registra conquista (pausa/exercício) |
+| GET | `/reports/dashboard` | Dashboard individual |
+| GET | `/reports/team-dashboard` | Dashboard da equipe |
+| GET | `/reports/team-achievements` | Conquistas da equipe |
+| GET | `/reports/export` | Exporta CSV/PDF |
+
+### `/webhook`
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/webhook/mercadopago` | Recebe notificações do Mercado Pago |
+
+---
+
+## Configuração e execução
+
+### Pré-requisitos
+
+- Python 3.11+
+- PostgreSQL
+- Conta no Mercado Pago (para pagamentos) e credenciais SMTP (para e-mails)
+
+### Passo a passo
+
+```bash
+# 1. Clonar e entrar no diretório
+cd BackEnd-StamFlow
+
+# 2. Criar e ativar o ambiente virtual
+python -m venv .venv
+source .venv/bin/activate      # Linux/macOS
+# .venv\Scripts\activate       # Windows
+
+# 3. Instalar dependências
+pip install -r requirements.txt
+pip install reportlab          # ⚠️ usado em relatórios, mas ausente do requirements.txt
+
+# 4. Criar o arquivo .env (ver seção abaixo)
+
+# 5. Aplicar as migrações
+alembic upgrade head
+
+# 6. Subir o servidor
+uvicorn main:app --reload
+```
+
+A documentação interativa fica disponível em `http://localhost:8000/docs` (Swagger) e `http://localhost:8000/redoc`.
+
+---
+
+## Variáveis de ambiente
+
+Crie um arquivo `.env` na raiz (já está no `.gitignore`):
+
+```env
+# Ambiente
+ENV=development
+
+# Banco de dados (use o driver async para a aplicação)
+DATABASE_URL=postgresql+asyncpg://usuario:senha@localhost:5432/StamFlow
+
+# JWT
+JWT_SECRET_KEY=xxxxxxxxxxxxxxx
+JWT_ALGORITHM=
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+JWT_REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# E-mail (SMTP)
+MAIL_USERNAME=seu-email@gmail.com
+MAIL_PASSWORD=sua-senha-de-app
+MAIL_FROM=seu-email@gmail.com
+MAIL_PORT=587
+MAIL_SERVER=smtp.gmail.com
+MAIL_STARTTLS=True
+MAIL_SSL_TLS=False
+
+# Token de operações administrativas
+ADMIN_SECRET_TOKEN=token-admin-secreto
+
+# Mercado Pago
+MERCADOPAGO_ACCESS_TOKEN=seu-access-token
+MP_WEBHOOK_SECRET=seu-webhook-secret
+
+# URL base do frontend (usada em links de e-mail)
+BASE_URL=https://login.stamflow.com.br
+```
+
+---
+
+## Migrações
+
+O projeto usa Alembic. Comandos úteis:
+
+```bash
+# Aplicar todas as migrações pendentes
+alembic upgrade head
+
+# Gerar uma nova migração a partir das mudanças nos models
+alembic revision --autogenerate -m "descricao da mudanca"
+
+# Reverter a última migração
+alembic downgrade -1
+```
+
+> O `alembic.ini` usa o driver **psycopg2** (síncrono) para as migrações, enquanto a aplicação usa **asyncpg**. É esperado.
+
+---
+
+## Pontos de atenção
+
+Itens que valem revisão antes de ir para produção:
+
+- **Credencial hardcoded no `alembic.ini`:** a `sqlalchemy.url` contém usuário, senha e host em texto puro. Idealmente, ler do ambiente (ex.: sobrescrever em `env.py` a partir da `DATABASE_URL`) e remover a string do arquivo versionado.
+- **`reportlab` ausente do `requirements.txt`:** é importado em `report_service.py`, mas não está listado. A exportação de PDF quebra sem ele instalado.
+- **Arquivos vazios (esqueletos):** `app/main.py`, `app/core/dependencies.py`, `app/services/token_service.py`, `app/services/client_service.py`, `app/utils/hashing.py` e `app/utils/pagination.py` estão sem conteúdo. Vale removê-los ou implementá-los.
+- **Nome do README original:** o arquivo versionado se chamava `READEME.md` (com typo) e estava vazio.
+- **Rotas de senha duplicadas:** `forgot-password` aparece tanto em `main.py` quanto em `app/api/routes/auth.py`. Vale consolidar para evitar divergência.
+
+---
+
+## Estrutura de pastas
+
+```
+BackEnd-StamFlow/
+├── main.py                      # Entrypoint (create_app) + rotas de reset de senha
+├── alembic.ini                  # Config do Alembic
+├── requirements.txt
+├── app/
+│   ├── api/
+│   │   ├── router.py            # Monta todos os routers
+│   │   ├── deps.py              # Autenticação, autorização, SDK do MP
+│   │   └── routes/              # Endpoints por domínio
+│   │       ├── auth.py
+│   │       ├── companies.py
+│   │       ├── managers.py
+│   │       ├── invites.py
+│   │       ├── subscriptions.py
+│   │       ├── subscription_plans.py
+│   │       ├── tickets.py
+│   │       ├── reports.py
+│   │       └── webhooks.py
+│   ├── core/
+│   │   ├── config.py            # Settings (pydantic-settings)
+│   │   └── security.py          # Hashing e JWT
+│   ├── db/
+│   │   ├── base.py              # Base declarativa
+│   │   └── session.py           # Engine async + get_db
+│   ├── models/                  # Entidades SQLAlchemy
+│   ├── schemas/                 # Modelos Pydantic
+│   └── services/                # Lógica de negócio
+├── alembic/
+│   └── versions/                # 10 migrações
+└── docs/                        # Documentação (visão, diagrama ER, por domínio)
+```
+
+---
+
+## Documentação adicional
+
+A pasta `docs/` contém o documento de visão (`visao.md`), o diagrama entidade-relacionamento (`diagramas/diagrama_er.png`) e documentação por domínio (`auth.md`, `company.md`, `invite.md`, `manager.md`, `report.md`, `subscription.md`, `subscription_plan.md`, `ticket.md`, `webhook.md`).

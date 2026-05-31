@@ -1,0 +1,39 @@
+# Ambiente e segredos
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# Alembic (gerado, não precisa versionar)
+# alembic/versions/ <- deixa comentado, vc QUER versionar as migrations
+
+# Build / distribuição
+dist/
+build/
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
