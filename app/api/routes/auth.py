@@ -175,7 +175,9 @@ async def read_users_me(
             "id": current_user.id,
             "nome_completo": current_user.nome_completo,
             "email": current_user.email,
-            "tipo": "client"
+            "tipo": "client",
+            "company_id": current_user.company_id,
+            "manager_id": current_user.manager_id
         }
     
     elif isinstance(current_user, Manager):
@@ -183,7 +185,8 @@ async def read_users_me(
             "id": current_user.id,
             "nome_completo": current_user.nome, 
             "email": current_user.email,        
-            "tipo": "manager"
+            "tipo": "manager",
+            "company_id": current_user.company_id
         }
     
     elif isinstance(current_user, Company):

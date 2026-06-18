@@ -67,28 +67,73 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_subscriptions_id'), 'subscriptions', ['id'], unique=False)
     op.create_index(op.f('ix_subscriptions_mp_subscription_id'), 'subscriptions', ['mp_subscription_id'], unique=False)
+
+    # --- clients ---
     op.add_column('clients', sa.Column('manager_id', sa.BigInteger(), nullable=True))
-    op.add_column('clients', sa.Column('cpf', sa.String(length=14), nullable=False))
-    op.add_column('clients', sa.Column('telefone', sa.String(length=20), nullable=False))
+    # cpf: adiciona nullable, preenche existentes, torna NOT NULL
+    op.add_column('clients', sa.Column('cpf', sa.String(length=14), nullable=True))
+    op.execute("UPDATE clients SET cpf = lpad(id::text, 11, '0') WHERE cpf IS NULL")
+    op.alter_column('clients', 'cpf', nullable=False)
+    # telefone: mesmo padrão
+    op.add_column('clients', sa.Column('telefone', sa.String(length=20), nullable=True))
+    op.execute("UPDATE clients SET telefone = concat('000000', id::text) WHERE telefone IS NULL")
+    op.alter_column('clients', 'telefone', nullable=False)
     op.create_index(op.f('ix_clients_telefone'), 'clients', ['telefone'], unique=False)
     op.create_unique_constraint(None, 'clients', ['cpf'])
     op.create_foreign_key(None, 'clients', 'managers', ['manager_id'], ['id'])
-    op.add_column('companies', sa.Column('nome_fantasia', sa.String(length=255), nullable=False))
-    op.add_column('companies', sa.Column('razao_social', sa.String(length=255), nullable=False))
-    op.add_column('companies', sa.Column('email', sa.String(length=100), nullable=False))
-    op.add_column('companies', sa.Column('cnpj', sa.String(length=18), nullable=False))
-    op.add_column('companies', sa.Column('telefone', sa.String(length=20), nullable=False))
-    op.add_column('companies', sa.Column('login', sa.String(), nullable=False))
-    op.add_column('companies', sa.Column('senha_hash', sa.String(length=255), nullable=False))
+
+    # --- companies ---
+    op.add_column('companies', sa.Column('nome_fantasia', sa.String(length=255), nullable=True))
+    op.execute("UPDATE companies SET nome_fantasia = '' WHERE nome_fantasia IS NULL")
+    op.alter_column('companies', 'nome_fantasia', nullable=False)
+
+    op.add_column('companies', sa.Column('razao_social', sa.String(length=255), nullable=True))
+    op.execute("UPDATE companies SET razao_social = '' WHERE razao_social IS NULL")
+    op.alter_column('companies', 'razao_social', nullable=False)
+
+    op.add_column('companies', sa.Column('email', sa.String(length=100), nullable=True))
+    op.execute("UPDATE companies SET email = concat('empresa_legada_', id::text, '@placeholder.com') WHERE email IS NULL")
+    op.alter_column('companies', 'email', nullable=False)
+
+    op.add_column('companies', sa.Column('cnpj', sa.String(length=18), nullable=True))
+    op.execute("UPDATE companies SET cnpj = concat('00000000000', id::text) WHERE cnpj IS NULL")
+    op.alter_column('companies', 'cnpj', nullable=False)
+
+    op.add_column('companies', sa.Column('telefone', sa.String(length=20), nullable=True))
+    op.execute("UPDATE companies SET telefone = '00000000000' WHERE telefone IS NULL")
+    op.alter_column('companies', 'telefone', nullable=False)
+
+    op.add_column('companies', sa.Column('login', sa.String(), nullable=True))
+    op.execute("UPDATE companies SET login = concat('empresa_legada_', id::text) WHERE login IS NULL")
+    op.alter_column('companies', 'login', nullable=False)
+
+    op.add_column('companies', sa.Column('senha_hash', sa.String(length=255), nullable=True))
+    op.execute("UPDATE companies SET senha_hash = 'PLACEHOLDER_RESET_REQUIRED' WHERE senha_hash IS NULL")
+    op.alter_column('companies', 'senha_hash', nullable=False)
+
     op.create_index(op.f('ix_companies_telefone'), 'companies', ['telefone'], unique=False)
     op.create_unique_constraint(None, 'companies', ['email'])
     op.create_unique_constraint(None, 'companies', ['cnpj'])
     op.create_unique_constraint(None, 'companies', ['login'])
     op.drop_column('companies', 'nome')
-    op.add_column('managers', sa.Column('nome', sa.String(length=100), nullable=False))
-    op.add_column('managers', sa.Column('cpf', sa.String(length=14), nullable=False))
-    op.add_column('managers', sa.Column('telefone', sa.String(length=20), nullable=False))
-    op.add_column('managers', sa.Column('email', sa.String(length=100), nullable=False))
+
+    # --- managers ---
+    op.add_column('managers', sa.Column('nome', sa.String(length=100), nullable=True))
+    op.execute("UPDATE managers SET nome = 'Gestor Legado' WHERE nome IS NULL")
+    op.alter_column('managers', 'nome', nullable=False)
+
+    op.add_column('managers', sa.Column('cpf', sa.String(length=14), nullable=True))
+    op.execute("UPDATE managers SET cpf = concat('0000000', id::text) WHERE cpf IS NULL")
+    op.alter_column('managers', 'cpf', nullable=False)
+
+    op.add_column('managers', sa.Column('telefone', sa.String(length=20), nullable=True))
+    op.execute("UPDATE managers SET telefone = '00000000000' WHERE telefone IS NULL")
+    op.alter_column('managers', 'telefone', nullable=False)
+
+    op.add_column('managers', sa.Column('email', sa.String(length=100), nullable=True))
+    op.execute("UPDATE managers SET email = concat('gestor_legado_', id::text, '@placeholder.com') WHERE email IS NULL")
+    op.alter_column('managers', 'email', nullable=False)
+
     op.create_index(op.f('ix_managers_telefone'), 'managers', ['telefone'], unique=False)
     op.create_unique_constraint(None, 'managers', ['cpf'])
     op.create_unique_constraint(None, 'managers', ['email'])

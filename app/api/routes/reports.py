@@ -135,10 +135,13 @@ async def export_reports(
         end_date=end_date
     )
 
+    # Sem dados no periodo -> 404 com mensagem clara para o frontend
     if not data:
-        raise HTTPException(status_code=404, detail="Nenhum dado encontrado para o período.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Nenhum dado encontrado para o período selecionado."
+        )
 
-    # 2. Gera o arquivo conforme formato
     if format == "csv":
         csv_content = ReportService.generate_csv(data)
         

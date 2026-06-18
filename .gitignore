@@ -1,39 +1,61 @@
-# Ambiente e segredos
-.env
-.env.*
-!.env.example
-
-# Python
+# ===== Python =====
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.pyw
-*.pyz
+*.py[cod]
+*$py.class
+*.so
 
-# Ambientes virtuais
+# ===== Ambientes virtuais =====
 .venv/
 venv/
 env/
 ENV/
 
-# Alembic (gerado, não precisa versionar)
-# alembic/versions/ <- deixa comentado, vc QUER versionar as migrations
+# ===== Variaveis de ambiente / segredos =====
+# NUNCA suba o .env (senha do banco, chaves, etc). O .env.example fica versionado.
+.env
+.env.*
+!.env.example
 
-# Build / distribuição
-dist/
+# ===== Backups e temporarios =====
+*.bak
+*.tmp
+*.orig
+*.swp
+*~
+*.pid
+
+# ===== Banco de dados local =====
+*.sqlite3
+*.db
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== Caches de ferramentas =====
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+htmlcov/
+
+# ===== Build / distribuicao =====
 build/
+dist/
 *.egg-info/
+.eggs/
 
-# IDEs
+# ===== IDE / editores =====
 .vscode/
 .idea/
-*.swp
-*.swo
+*.iml
 
-# OS
+# ===== Sistema operacional =====
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
+# ===== Arquivos de rascunho do projeto =====
+# Se o exemplo.txt for so um arquivo de teste/rascunho, descomente a linha abaixo
+# para nao versiona-lo:
+# exemplo.txt

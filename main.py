@@ -99,6 +99,7 @@ def create_app() -> FastAPI:
         "https://login.stamflow.com.br",
         "https://gestor.stamflow.com.br",
         "https://painel.stamflow.com.br",
+        "https://user.stamflow.com.br",
         "https://painel-empregado.stamflow.com.br",
         "https://stamflow.com.br",
         "https://www.stamflow.com.br"
@@ -136,16 +137,33 @@ def create_app() -> FastAPI:
         
         # 4. Envia Email
         html_body = f"""
-        <div style="font-family: Arial, sans-serif; color: #333;">
-            <h2 style="color: #34D399;">Recuperação de Senha - StamFlow</h2>
-            <p>Olá,</p>
-            <p>Recebemos uma solicitação para redefinir sua senha.</p>
-            <p>Clique no botão abaixo para criar uma nova senha:</p>
-            <a href="{reset_link}" style="background-color: #34D399; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0;">Redefinir Minha Senha</a>
-            <p>Ou copie e cole este link no navegador:</p>
-            <p>{reset_link}</p>
-            <p style="font-size: 12px; color: #777;">Este link expira em 15 minutos.</p>
-            <p>Se não foi você, ignore este e-mail.</p>
+        <div style="margin:0;padding:0;background-color:#0b1120;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0b1120;padding:32px 0;">
+            <tr><td align="center">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:#0f172a;border-radius:16px;overflow:hidden;border:1px solid #1e293b;">
+                <tr><td style="height:6px;background-color:#a855f7;background-image:linear-gradient(90deg,#38bdf8,#a855f7,#ec4899,#f59e0b);font-size:0;line-height:0;">&nbsp;</td></tr>
+                <tr><td style="padding:36px 36px 28px 36px;font-family:Arial,Helvetica,sans-serif;color:#e2e8f0;">
+                  <img src="https://login.stamflow.com.br/icon.png" width="48" height="48" alt="StamFlow" style="border-radius:14px;display:block;margin-bottom:14px;" />
+                  <div style="font-size:22px;font-weight:bold;color:#ffffff;margin-bottom:2px;">StamFlow</div>
+                  <div style="font-size:14px;color:#94a3b8;margin-bottom:24px;">Recupera\u00e7\u00e3o de senha</div>
+                  <p style="font-size:15px;line-height:1.6;color:#cbd5e1;margin:0 0 16px 0;">Ol\u00e1,</p>
+                  <p style="font-size:15px;line-height:1.6;color:#cbd5e1;margin:0 0 24px 0;">Recebemos uma solicita\u00e7\u00e3o para redefinir a senha da sua conta. Clique no bot\u00e3o abaixo para criar uma nova senha:</p>
+                  <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 24px 0;">
+                    <tr><td align="center" style="border-radius:10px;background-color:#7c3aed;background-image:linear-gradient(90deg,#6366f1,#a855f7,#ec4899);">
+                      <a href="{reset_link}" style="display:inline-block;padding:14px 32px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none;border-radius:10px;">Redefinir minha senha</a>
+                    </td></tr>
+                  </table>
+                  <p style="font-size:13px;line-height:1.6;color:#94a3b8;margin:0 0 6px 0;">Ou copie e cole este link no navegador:</p>
+                  <p style="font-size:13px;line-height:1.5;color:#38bdf8;word-break:break-all;margin:0 0 24px 0;">{reset_link}</p>
+                  <div style="border-top:1px solid #1e293b;padding-top:16px;">
+                    <p style="font-size:12px;color:#64748b;margin:0 0 4px 0;">Este link expira em 15 minutos.</p>
+                    <p style="font-size:12px;color:#64748b;margin:0;">Se voc\u00ea n\u00e3o solicitou isso, ignore este e-mail.</p>
+                  </div>
+                </td></tr>
+              </table>
+              <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#475569;margin-top:16px;">&copy; StamFlow</div>
+            </td></tr>
+          </table>
         </div>
         """
 

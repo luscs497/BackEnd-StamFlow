@@ -413,8 +413,28 @@ class ReportService:
         }
 
     # ==========================================================
-    # EXPORTAÇÃO (CSV / PDF) - NOVO!
+    # EXPORTAÇÃO (CSV / PDF) - REDESENHO
     # ==========================================================
+
+    # Rótulos legíveis das categorias do JSONB `metrics`.
+    _PARTES_POSTURA = [
+        ("shoulder", "Ombro"),
+        ("head", "Cabeça"),
+        ("rotation", "Rotação"),
+        ("back", "Costas"),
+    ]
+    _EMOCOES = [
+        ("happy", "Feliz"),
+        ("neutral", "Neutro"),
+        ("sad", "Triste"),
+        ("angry", "Irritado"),
+    ]
+    _NIVEIS = [
+        ("perfeito", "Perfeito"),
+        ("bom", "Bom"),
+        ("ruim", "Ruim"),
+        ("critico", "Crítico"),
+    ]
 
     @staticmethod
     async def get_export_data(
@@ -423,105 +443,659 @@ class ReportService:
         start_date: date,
         end_date: date
     ) -> list[dict]:
+        """
+        Extrai TODOS os dados disponíveis de cada DailyReport da empresa no período.
+
+        Privacidade: o nome real do cliente NUNCA sai daqui. Cada client_id é
+        mapeado para um rótulo estável "Colaborador N" dentro do relatório.
+
+        Cada registro retornado contém, além de data/tempo/stamina/pausas/exercícios:
+          - score (0-100) e status de cada parte da postura (ombro/cabeça/rotação/costas);
+          - distribuição de humor (% feliz/neutro/triste/irritado) e índice de humor;
+          - contagem bruta de amostras por categoria/nível (perfeito/bom/ruim/crítico);
+          - totais de amostras de postura, humor e gerais.
+        """
         from app.models.client import Client
-        
-        # Busca dados e faz join com o nome do cliente
-        query = select(DailyReport, Client.nome_completo).join(
+
+        query = select(DailyReport, DailyReport.client_id).join(
             Client, Client.id == DailyReport.client_id
         ).where(
             Client.company_id == company_id,
             DailyReport.report_date >= start_date,
             DailyReport.report_date <= end_date
-        ).order_by(DailyReport.report_date.desc())
+        ).order_by(DailyReport.client_id.asc(), DailyReport.report_date.asc())
 
         result = await db.execute(query)
         rows = result.all()
 
-        export_data = []
-        for report, nome in rows:
+        # Anonimização estável: 1º client_id que aparece -> "Colaborador 1", etc.
+        ordem: list = []
+        for _, cid in rows:
+            if cid not in ordem:
+                ordem.append(cid)
+        anon = {cid: f"Colaborador {idx + 1}" for idx, cid in enumerate(ordem)}
+
+        export_data: list[dict] = []
+        for report, cid in rows:
             metrics = report.metrics
-            if isinstance(metrics, str): metrics = json.loads(metrics)
-            
-            stamina = ReportService._calcular_stamina_0_100(metrics, int(report.tempo_uso_segundos or 0))
-            tempo_fmt = ReportService._formatar_tempo(int(report.tempo_uso_segundos or 0))
+            if isinstance(metrics, str):
+                metrics = json.loads(metrics)
+            metrics = metrics or {}
+
+            tempo_seg = int(report.tempo_uso_segundos or 0)
+            flat = ReportService._achatar_metrics(metrics)
+
+            # Scores agregados
+            postura = ReportService._score_grupo(flat, ["shoulder", "head", "rotation", "back"])
+            humor = ReportService._score_grupo(flat, ["happy", "neutral", "sad", "angry"])
+            stamina = ReportService._calcular_stamina_0_100(metrics, tempo_seg)
+            ergo = ReportService._calcular_detalhes_ergonomia(metrics)
+            dist_humor = ReportService._calcular_distribuicao_humor(metrics)
+
+            # Score individual de cada parte da postura
+            score_parte = {}
+            for key, _label in ReportService._PARTES_POSTURA:
+                sc = ReportService._score_categoria(flat[key]) if key in flat else None
+                score_parte[key] = int(round(sc)) if sc is not None else None
+
+            # Contagem bruta de amostras (nada do `metrics` é descartado)
+            counts = {}
+            amostras_postura = 0
+            amostras_humor = 0
+            for key, _label in ReportService._PARTES_POSTURA + ReportService._EMOCOES:
+                c = flat.get(key, {}) or {}
+                cat = {nivel: int(c.get(nivel, 0) or 0) for nivel, _ in ReportService._NIVEIS}
+                cat_total = sum(cat.values())
+                cat["total"] = cat_total
+                counts[key] = cat
+                if any(key == k for k, _ in ReportService._PARTES_POSTURA):
+                    amostras_postura += cat_total
+                else:
+                    amostras_humor += cat_total
 
             export_data.append({
+                # Identificação / tempo
                 "data": report.report_date.strftime("%d/%m/%Y"),
-                "colaborador": nome,
-                "tempo_uso": tempo_fmt,
+                "data_iso": report.report_date.isoformat(),
+                "colaborador": anon.get(cid, "Colaborador"),
+                "tempo_uso": ReportService._formatar_tempo(tempo_seg),
+                "tempo_seg": tempo_seg,
+                # Índices principais
                 "stamina": int(stamina),
+                "stamina_nivel": ReportService._get_label_stamina(stamina),
+                "postura": postura,
+                "humor": humor,
+                # Postura — score + status por parte
+                "ombro_pct": score_parte["shoulder"],
+                "cabeca_pct": score_parte["head"],
+                "rotacao_pct": score_parte["rotation"],
+                "costas_pct": score_parte["back"],
+                "ombro": ergo.shoulder_status,
+                "cabeca": ergo.head_status,
+                "rotacao": ergo.rotation_status,
+                "costas": ergo.back_status,
+                # Humor — distribuição
+                "feliz": dist_humor.happy,
+                "neutro": dist_humor.neutral,
+                "triste": dist_humor.sad,
+                "irritado": dist_humor.angry,
+                # Conquistas
                 "pausas": int(report.pausas_mentais_feitas or 0),
-                "exercicios": int(report.exercicios_feitos or 0)
+                "exercicios": int(report.exercicios_feitos or 0),
+                # Amostras brutas
+                "counts": counts,
+                "amostras_postura": amostras_postura,
+                "amostras_humor": amostras_humor,
+                "amostras_total": amostras_postura + amostras_humor,
             })
-        
+
         return export_data
+
+    # ----------------------------------------------------------
+    # Helpers de score / agregação
+    # ----------------------------------------------------------
+
+    @staticmethod
+    def _score_categoria(counts: dict):
+        total = sum(int(v or 0) for v in counts.values()) if counts else 0
+        if total == 0:
+            return None
+        return (
+            int(counts.get("perfeito", 0) or 0) * 100 +
+            int(counts.get("bom", 0) or 0) * 75 +
+            int(counts.get("ruim", 0) or 0) * 35
+        ) / total
+
+    @staticmethod
+    def _score_grupo(flat: dict, keys: list):
+        vals = []
+        for k in keys:
+            if k in flat:
+                sc = ReportService._score_categoria(flat[k])
+                if sc is not None:
+                    vals.append(sc)
+        if not vals:
+            return None
+        return int(round(sum(vals) / len(vals)))
+
+    @staticmethod
+    def _media_lista(valores: list):
+        vals = [v for v in valores if v is not None]
+        return int(round(sum(vals) / len(vals))) if vals else None
+
+    @staticmethod
+    def _build_aggregates(data: list[dict]) -> tuple[list[dict], dict]:
+        """
+        A partir dos registros, calcula:
+          - por_colaborador: médias e totais de cada colaborador;
+          - resumo_equipe: médias, totais e distribuição geral da equipe.
+        """
+        # ---- Por colaborador ----
+        grupos: dict[str, list[dict]] = {}
+        for r in data:
+            grupos.setdefault(r["colaborador"], []).append(r)
+
+        por_colaborador: list[dict] = []
+        for nome, regs in grupos.items():
+            tempo_seg = sum(int(x.get("tempo_seg", 0)) for x in regs)
+            melhor = max(regs, key=lambda x: x["stamina"])
+            pior = min(regs, key=lambda x: x["stamina"])
+            por_colaborador.append({
+                "colaborador": nome,
+                "registros": len(regs),
+                "tempo_seg": tempo_seg,
+                "tempo_uso": ReportService._formatar_tempo(tempo_seg),
+                "stamina": ReportService._media_lista([x["stamina"] for x in regs]) or 0,
+                "postura": ReportService._media_lista([x["postura"] for x in regs]),
+                "humor": ReportService._media_lista([x["humor"] for x in regs]),
+                "pausas": sum(int(x["pausas"]) for x in regs),
+                "exercicios": sum(int(x["exercicios"]) for x in regs),
+                "melhor_dia": f'{melhor["data"]} ({melhor["stamina"]}%)',
+                "pior_dia": f'{pior["data"]} ({pior["stamina"]}%)',
+            })
+        por_colaborador.sort(key=lambda x: x["colaborador"])
+
+        # ---- Resumo geral da equipe ----
+        tempo_total = sum(int(r.get("tempo_seg", 0)) for r in data)
+        n_colab = len(grupos)
+
+        # Distribuição de humor agregada (ponderada pelas amostras de humor)
+        emo_acc = {k: 0 for k, _ in ReportService._EMOCOES}
+        for r in data:
+            for k, _ in ReportService._EMOCOES:
+                emo_acc[k] += int(r["counts"][k]["total"])
+        emo_total = sum(emo_acc.values())
+        dist_humor_eq = {
+            k: (int(round(emo_acc[k] / emo_total * 100)) if emo_total else 0)
+            for k, _ in ReportService._EMOCOES
+        }
+
+        # Melhor / pior colaborador por stamina média
+        melhor_colab = max(por_colaborador, key=lambda x: x["stamina"]) if por_colaborador else None
+        pior_colab = min(por_colaborador, key=lambda x: x["stamina"]) if por_colaborador else None
+
+        stamina_eq = ReportService._media_lista([r["stamina"] for r in data]) or 0
+        resumo_equipe = {
+            "n_colaboradores": n_colab,
+            "n_registros": len(data),
+            "tempo_total_seg": tempo_total,
+            "tempo_total": ReportService._formatar_tempo(tempo_total),
+            "tempo_medio_colab": ReportService._formatar_tempo(int(tempo_total / n_colab)) if n_colab else "0s",
+            "stamina_media": stamina_eq,
+            "stamina_nivel": ReportService._get_label_stamina(stamina_eq),
+            "postura_media": ReportService._media_lista([r["postura"] for r in data]),
+            "humor_media": ReportService._media_lista([r["humor"] for r in data]),
+            "pausas_total": sum(int(r["pausas"]) for r in data),
+            "exercicios_total": sum(int(r["exercicios"]) for r in data),
+            "amostras_total": sum(int(r["amostras_total"]) for r in data),
+            "dist_humor": dist_humor_eq,
+            "melhor_colaborador": (
+                f'{melhor_colab["colaborador"]} ({melhor_colab["stamina"]}%)' if melhor_colab else "--"
+            ),
+            "pior_colaborador": (
+                f'{pior_colab["colaborador"]} ({pior_colab["stamina"]}%)' if pior_colab else "--"
+            ),
+        }
+        return por_colaborador, resumo_equipe
+
+    # ----------------------------------------------------------
+    # CSV (simples, porém completo e organizado)
+    # ----------------------------------------------------------
 
     @staticmethod
     def generate_csv(data: list[dict]) -> str:
+        por_colaborador, resumo = ReportService._build_aggregates(data)
+
         output = io.StringIO()
-        writer = csv.writer(output, delimiter=';') # CSV para Excel em PT-BR
-        
-        # Cabeçalho
-        writer.writerow(["Data", "Colaborador", "Tempo de Uso", "Stamina (%)", "Pausas Mentais", "Exercícios"])
-        
-        for row in data:
+        output.write("\ufeff")  # BOM p/ o Excel abrir acentos corretamente
+        writer = csv.writer(output, delimiter=";")
+
+        def n(v):
+            return v if v is not None else "-"
+
+        # ---- Cabeçalho do relatório ----
+        writer.writerow(["StamFlow - Relatório de Produtividade da Equipe"])
+        writer.writerow(["Dados anonimizados para preservar a privacidade dos colaboradores"])
+        writer.writerow([])
+
+        # ---- Seção 1: Resumo geral da equipe ----
+        writer.writerow(["RESUMO GERAL DA EQUIPE"])
+        writer.writerow(["Métrica", "Valor"])
+        writer.writerow(["Colaboradores", resumo["n_colaboradores"]])
+        writer.writerow(["Registros (dia x colaborador)", resumo["n_registros"]])
+        writer.writerow(["Stamina média (%)", resumo["stamina_media"]])
+        writer.writerow(["Nível de stamina", resumo["stamina_nivel"]])
+        writer.writerow(["Postura média (%)", n(resumo["postura_media"])])
+        writer.writerow(["Índice de humor (%)", n(resumo["humor_media"])])
+        writer.writerow(["Tempo ativo total", resumo["tempo_total"]])
+        writer.writerow(["Tempo médio por colaborador", resumo["tempo_medio_colab"]])
+        writer.writerow(["Pausas mentais (total)", resumo["pausas_total"]])
+        writer.writerow(["Exercícios (total)", resumo["exercicios_total"]])
+        writer.writerow(["Amostras coletadas (total)", resumo["amostras_total"]])
+        writer.writerow(["Humor - Feliz (%)", resumo["dist_humor"]["happy"]])
+        writer.writerow(["Humor - Neutro (%)", resumo["dist_humor"]["neutral"]])
+        writer.writerow(["Humor - Triste (%)", resumo["dist_humor"]["sad"]])
+        writer.writerow(["Humor - Irritado (%)", resumo["dist_humor"]["angry"]])
+        writer.writerow(["Melhor colaborador (stamina média)", resumo["melhor_colaborador"]])
+        writer.writerow(["Colaborador em atenção (stamina média)", resumo["pior_colaborador"]])
+        writer.writerow([])
+
+        # ---- Seção 2: Resumo por colaborador ----
+        writer.writerow(["RESUMO POR COLABORADOR"])
+        writer.writerow([
+            "Colaborador", "Registros", "Tempo ativo", "Stamina média (%)",
+            "Postura média (%)", "Humor médio (%)", "Pausas mentais", "Exercícios",
+            "Melhor dia", "Pior dia",
+        ])
+        for c in por_colaborador:
             writer.writerow([
-                row["data"],
-                row["colaborador"],
-                row["tempo_uso"],
-                row["stamina"],
-                row["pausas"],
-                row["exercicios"]
+                c["colaborador"], c["registros"], c["tempo_uso"], c["stamina"],
+                n(c["postura"]), n(c["humor"]), c["pausas"], c["exercicios"],
+                c["melhor_dia"], c["pior_dia"],
             ])
-            
+        writer.writerow([])
+
+        # ---- Seção 3: Detalhamento por registro ----
+        writer.writerow(["DETALHAMENTO POR REGISTRO"])
+        writer.writerow([
+            "Data", "Colaborador", "Tempo de uso", "Tempo (s)",
+            "Stamina (%)", "Nível stamina", "Postura média (%)", "Índice humor (%)",
+            "Ombro (%)", "Ombro", "Cabeça (%)", "Cabeça",
+            "Rotação (%)", "Rotação", "Costas (%)", "Costas",
+            "Feliz (%)", "Neutro (%)", "Triste (%)", "Irritado (%)",
+            "Pausas mentais", "Exercícios",
+            "Amostras postura", "Amostras humor", "Amostras totais",
+        ])
+        for r in data:
+            writer.writerow([
+                r["data"], r["colaborador"], r["tempo_uso"], r["tempo_seg"],
+                r["stamina"], r["stamina_nivel"], n(r["postura"]), n(r["humor"]),
+                n(r["ombro_pct"]), r["ombro"], n(r["cabeca_pct"]), r["cabeca"],
+                n(r["rotacao_pct"]), r["rotacao"], n(r["costas_pct"]), r["costas"],
+                r["feliz"], r["neutro"], r["triste"], r["irritado"],
+                r["pausas"], r["exercicios"],
+                r["amostras_postura"], r["amostras_humor"], r["amostras_total"],
+            ])
+        writer.writerow([])
+
+        # ---- Seção 4: Amostras brutas por categoria/nível ----
+        # Tudo que existe no campo `metrics` é exposto aqui, sem perdas.
+        writer.writerow(["AMOSTRAS BRUTAS POR CATEGORIA (do campo metrics)"])
+        writer.writerow([
+            "Data", "Colaborador", "Categoria", "Tipo",
+            "Perfeito", "Bom", "Ruim", "Crítico", "Total",
+        ])
+        cat_labels = (
+            [(k, lbl, "Postura") for k, lbl in ReportService._PARTES_POSTURA] +
+            [(k, lbl, "Humor") for k, lbl in ReportService._EMOCOES]
+        )
+        for r in data:
+            for key, lbl, tipo in cat_labels:
+                c = r["counts"][key]
+                writer.writerow([
+                    r["data"], r["colaborador"], lbl, tipo,
+                    c["perfeito"], c["bom"], c["ruim"], c["critico"], c["total"],
+                ])
+
         return output.getvalue()
+
+    # ----------------------------------------------------------
+    # PDF (tema escuro StamFlow)
+    # ----------------------------------------------------------
+
+    @staticmethod
+    def _load_logo():
+        """
+        Baixa o logo do StamFlow (cache em memória). Se a rede falhar,
+        retorna None e o PDF usa o wordmark vetorial como fallback.
+        """
+        cached = getattr(ReportService, "_logo_cache", "unset")
+        if cached != "unset":
+            return cached
+
+        logo = None
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                "https://login.stamflow.com.br/icon.png",
+                headers={"User-Agent": "StamFlow-Report/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                raw = resp.read()
+            if raw:
+                logo = io.BytesIO(raw)
+        except Exception:
+            logo = None
+
+        ReportService._logo_cache = logo
+        return logo
 
     @staticmethod
     def generate_pdf(data: list[dict], start_date: date, end_date: date) -> bytes:
+        from reportlab.platypus import Image
+        from reportlab.lib.utils import ImageReader
+
+        por_colaborador, resumo = ReportService._build_aggregates(data)
+
+        # ---- Paleta StamFlow (tema escuro) ----
+        BG = colors.HexColor("#0b1120")
+        CARD = colors.HexColor("#0f172a")
+        ROW = colors.HexColor("#111c34")
+        ROW_ALT = colors.HexColor("#0d1729")
+        LINE = colors.HexColor("#1e293b")
+        TXT = colors.HexColor("#e2e8f0")
+        MUT = colors.HexColor("#94a3b8")
+        GREEN = colors.HexColor("#34d399")
+        PURPLE = colors.HexColor("#a855f7")
+        CYAN = colors.HexColor("#38bdf8")
+        PINK = colors.HexColor("#ec4899")
+        AMBER = colors.HexColor("#f59e0b")
+        RED = colors.HexColor("#f87171")
+        WHITE = colors.HexColor("#ffffff")
+
+        GRAD = ["#38bdf8", "#a855f7", "#ec4899", "#f59e0b"]
+
+        PAGE_W, PAGE_H = A4
+        L_MARGIN = R_MARGIN = 34
+        CONTENT_W = PAGE_W - L_MARGIN - R_MARGIN  # 527.27 pt
+
+        logo = ReportService._load_logo()
+
+        def draw_chrome(canvas, doc):
+            canvas.saveState()
+            # Fundo
+            canvas.setFillColor(BG)
+            canvas.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
+            # Faixa de gradiente do raio (cyan -> roxo -> rosa -> laranja)
+            seg = PAGE_W / len(GRAD)
+            for idx, c in enumerate(GRAD):
+                canvas.setFillColor(colors.HexColor(c))
+                canvas.rect(idx * seg, PAGE_H - 6, seg + 1, 6, fill=1, stroke=0)
+            # Rodapé
+            canvas.setFillColor(colors.HexColor("#475569"))
+            canvas.setFont("Helvetica", 8)
+            canvas.drawCentredString(
+                PAGE_W / 2, 24,
+                "Gerado automaticamente pelo StamFlow  •  Dados anonimizados para preservar a privacidade",
+            )
+            canvas.setFillColor(MUT)
+            canvas.drawRightString(PAGE_W - R_MARGIN, 24, f"Página {doc.page}")
+            canvas.restoreState()
+
         buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            topMargin=44, bottomMargin=46, leftMargin=L_MARGIN, rightMargin=R_MARGIN,
+            title="Relatório StamFlow", author="StamFlow",
+        )
         elements = []
-        styles = getSampleStyleSheet()
 
-        # Título
-        title = f"Relatório de Produtividade StamFlow"
-        period = f"Período: {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}"
-        
-        elements.append(Paragraph(title, styles['Title']))
-        elements.append(Paragraph(period, styles['Normal']))
-        elements.append(Spacer(1, 20))
+        title_style = ParagraphStyle("t", fontName="Helvetica-Bold", fontSize=22, textColor=WHITE, leading=25)
+        sub_style = ParagraphStyle("s", fontName="Helvetica", fontSize=10, textColor=MUT, leading=14)
+        sec_style = ParagraphStyle("sec", fontName="Helvetica-Bold", fontSize=13, textColor=TXT, leading=16)
+        sec_hint = ParagraphStyle("sech", fontName="Helvetica", fontSize=8.5, textColor=MUT, leading=11)
 
-        # Dados da Tabela
-        table_data = [["Data", "Colaborador", "Tempo", "Stamina", "Pausas", "Exerc."]]
-        
-        for row in data:
-            table_data.append([
-                row["data"],
-                row["colaborador"],
-                row["tempo_uso"],
-                f"{row['stamina']}%",
-                str(row["pausas"]),
-                str(row["exercicios"])
-            ])
+        # ---------- Cabeçalho (logo + título) ----------
+        head_txt = [
+            Paragraph("StamFlow", title_style),
+            Paragraph("Relatório de Produtividade da Equipe", sub_style),
+            Paragraph(
+                f"Período: {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}",
+                sub_style,
+            ),
+        ]
+        if logo is not None:
+            try:
+                logo.seek(0)
+                iw, ih = ImageReader(logo).getSize()
+                disp_h = 46.0
+                disp_w = disp_h * (iw / ih) if ih else 46.0
+                logo.seek(0)
+                img = Image(logo, width=disp_w, height=disp_h)
+                header = Table(
+                    [[img, head_txt]],
+                    colWidths=[disp_w + 14, CONTENT_W - disp_w - 14],
+                )
+                header.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]))
+                elements.append(header)
+            except Exception:
+                elements.extend(head_txt)
+        else:
+            elements.extend(head_txt)
 
-        # Estilo da Tabela
-        t = Table(table_data, colWidths=[70, 160, 70, 60, 60, 60])
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#10B981")),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        elements.append(Spacer(1, 16))
+
+        # ---------- Cartões de resumo (KPIs) ----------
+        def kpi_table(rows_pairs, value_colors):
+            """rows_pairs: lista de (label, valor); 4 por linha."""
+            labels = [p[0] for p in rows_pairs]
+            values = [p[1] for p in rows_pairs]
+            tbl = Table(
+                [labels, values],
+                colWidths=[CONTENT_W / 4.0] * 4,
+            )
+            st = [
+                ("BACKGROUND", (0, 0), (-1, -1), CARD),
+                ("TEXTCOLOR", (0, 0), (-1, 0), MUT),
+                ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                ("FONTSIZE", (0, 1), (-1, 1), 15),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, 0), 10),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 2),
+                ("TOPPADDING", (0, 1), (-1, 1), 2),
+                ("BOTTOMPADDING", (0, 1), (-1, 1), 10),
+                ("BOX", (0, 0), (-1, -1), 0.6, LINE),
+                ("INNERGRID", (0, 0), (-1, -1), 0.6, LINE),
+            ]
+            for ci, col in enumerate(value_colors):
+                st.append(("TEXTCOLOR", (ci, 1), (ci, 1), col))
+            tbl.setStyle(TableStyle(st))
+            return tbl
+
+        def fmt_pct(v):
+            return f"{v}%" if v is not None else "—"
+
+        elements.append(kpi_table(
+            [
+                ("COLABORADORES", str(resumo["n_colaboradores"])),
+                ("STAMINA MÉDIA", f'{resumo["stamina_media"]}%'),
+                ("POSTURA MÉDIA", fmt_pct(resumo["postura_media"])),
+                ("ÍNDICE DE HUMOR", fmt_pct(resumo["humor_media"])),
+            ],
+            [CYAN, GREEN, PURPLE, PINK],
+        ))
+        elements.append(Spacer(1, 8))
+        elements.append(kpi_table(
+            [
+                ("TEMPO ATIVO TOTAL", resumo["tempo_total"]),
+                ("MÉDIA / COLABORADOR", resumo["tempo_medio_colab"]),
+                ("PAUSAS MENTAIS", str(resumo["pausas_total"])),
+                ("EXERCÍCIOS", str(resumo["exercicios_total"])),
+            ],
+            [TXT, TXT, GREEN, GREEN],
+        ))
+        elements.append(Spacer(1, 18))
+
+        # ---------- Distribuição de humor da equipe ----------
+        elements.append(Paragraph("Distribuição de humor da equipe", sec_style))
+        elements.append(Spacer(1, 8))
+        dh = resumo["dist_humor"]
+        humor_rows = [
+            ["Feliz", "Neutro", "Triste", "Irritado"],
+            [f'{dh["happy"]}%', f'{dh["neutral"]}%', f'{dh["sad"]}%', f'{dh["angry"]}%'],
+        ]
+        ht = Table(humor_rows, colWidths=[CONTENT_W / 4.0] * 4)
+        ht.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), CARD),
+            ("TEXTCOLOR", (0, 0), (-1, 0), MUT),
+            ("TEXTCOLOR", (0, 1), (0, 1), GREEN),
+            ("TEXTCOLOR", (1, 1), (1, 1), CYAN),
+            ("TEXTCOLOR", (2, 1), (2, 1), AMBER),
+            ("TEXTCOLOR", (3, 1), (3, 1), RED),
+            ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 8),
+            ("FONTSIZE", (0, 1), (-1, 1), 14),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("BOX", (0, 0), (-1, -1), 0.6, LINE),
+            ("INNERGRID", (0, 0), (-1, -1), 0.6, LINE),
         ]))
-        
-        elements.append(t)
-        
-        elements.append(Spacer(1, 30))
-        elements.append(Paragraph(f"Gerado automaticamente pelo sistema StamFlow.", styles['Italic']))
+        elements.append(ht)
+        elements.append(Spacer(1, 18))
 
-        doc.build(elements)
+        # ---------- Resumo por colaborador ----------
+        elements.append(Paragraph("Resumo por colaborador", sec_style))
+        elements.append(Paragraph("Médias e totais consolidados de cada colaborador no período.", sec_hint))
+        elements.append(Spacer(1, 8))
+
+        colab_header = ["Colaborador", "Reg.", "Tempo ativo", "Stamina", "Postura", "Humor", "Pausas", "Exerc."]
+        colab_tbl = [colab_header]
+        for c in por_colaborador:
+            colab_tbl.append([
+                c["colaborador"], str(c["registros"]), c["tempo_uso"],
+                f'{c["stamina"]}%', fmt_pct(c["postura"]), fmt_pct(c["humor"]),
+                str(c["pausas"]), str(c["exercicios"]),
+            ])
+        ct = Table(colab_tbl, colWidths=[120, 38, 88, 62, 62, 56, 50, 50], repeatRows=1)
+        cstyle = [
+            ("BACKGROUND", (0, 0), (-1, 0), PURPLE),
+            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("FONTSIZE", (0, 1), (-1, -1), 8.5),
+            ("TEXTCOLOR", (0, 1), (-1, -1), TXT),
+            ("TEXTCOLOR", (3, 1), (3, -1), GREEN),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("INNERGRID", (0, 0), (-1, -1), 0.4, LINE),
+            ("BOX", (0, 0), (-1, -1), 0.4, LINE),
+        ]
+        for ridx in range(1, len(colab_tbl)):
+            cstyle.append(("BACKGROUND", (0, ridx), (-1, ridx), ROW if ridx % 2 == 1 else ROW_ALT))
+        ct.setStyle(TableStyle(cstyle))
+        elements.append(ct)
+        elements.append(Spacer(1, 18))
+
+        # ---------- Detalhamento por registro ----------
+        elements.append(Paragraph("Detalhamento por registro", sec_style))
+        elements.append(Spacer(1, 8))
+
+        header = ["Colaborador", "Data", "Tempo", "Stamina", "Postura", "Humor", "Pausas", "Exerc."]
+        table_data = [header]
+        for r in data:
+            table_data.append([
+                r["colaborador"], r["data"], r["tempo_uso"],
+                f'{r["stamina"]}%', fmt_pct(r["postura"]), fmt_pct(r["humor"]),
+                str(r["pausas"]), str(r["exercicios"]),
+            ])
+        t = Table(table_data, colWidths=[112, 66, 64, 60, 60, 55, 50, 48], repeatRows=1)
+        style = [
+            ("BACKGROUND", (0, 0), (-1, 0), PURPLE),
+            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("FONTSIZE", (0, 1), (-1, -1), 8.5),
+            ("TEXTCOLOR", (0, 1), (-1, -1), TXT),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("INNERGRID", (0, 0), (-1, -1), 0.4, LINE),
+            ("BOX", (0, 0), (-1, -1), 0.4, LINE),
+        ]
+        # Colore a coluna de stamina conforme o nível
+        for ridx in range(1, len(table_data)):
+            style.append(("BACKGROUND", (0, ridx), (-1, ridx), ROW if ridx % 2 == 1 else ROW_ALT))
+            sval = data[ridx - 1]["stamina"]
+            scol = GREEN if sval >= 75 else (CYAN if sval >= 50 else (AMBER if sval >= 25 else RED))
+            style.append(("TEXTCOLOR", (3, ridx), (3, ridx), scol))
+        t.setStyle(TableStyle(style))
+        elements.append(t)
+        elements.append(Spacer(1, 18))
+
+        # ---------- Ergonomia e humor por registro ----------
+        elements.append(Paragraph("Ergonomia e humor por registro", sec_style))
+        elements.append(Paragraph(
+            "Status de cada parte do corpo e distribuição de humor (% do tempo) por registro.",
+            sec_hint,
+        ))
+        elements.append(Spacer(1, 8))
+
+        status_color = {
+            "Excelente": GREEN, "Boa": CYAN, "Atenção": AMBER,
+            "Crítica": RED, "---": MUT, "—": MUT,
+        }
+        header2 = ["Colaborador", "Ombro", "Cabeça", "Rotação", "Costas",
+                   "Feliz", "Neutro", "Triste", "Irritado"]
+        table2 = [header2]
+        for r in data:
+            table2.append([
+                r["colaborador"],
+                r.get("ombro") or "---", r.get("cabeca") or "---",
+                r.get("rotacao") or "---", r.get("costas") or "---",
+                f'{r["feliz"]}%', f'{r["neutro"]}%', f'{r["triste"]}%', f'{r["irritado"]}%',
+            ])
+        t2 = Table(table2, colWidths=[100, 58, 58, 58, 56, 46, 50, 46, 52], repeatRows=1)
+        style2 = [
+            ("BACKGROUND", (0, 0), (-1, 0), PURPLE),
+            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 8.5),
+            ("FONTSIZE", (0, 1), (-1, -1), 8),
+            ("TEXTCOLOR", (0, 1), (-1, -1), TXT),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("INNERGRID", (0, 0), (-1, -1), 0.4, LINE),
+            ("BOX", (0, 0), (-1, -1), 0.4, LINE),
+        ]
+        for ridx in range(1, len(table2)):
+            style2.append(("BACKGROUND", (0, ridx), (-1, ridx), ROW if ridx % 2 == 1 else ROW_ALT))
+            for cidx in range(1, 5):  # status de ergonomia coloridos
+                val = table2[ridx][cidx]
+                style2.append(("TEXTCOLOR", (cidx, ridx), (cidx, ridx), status_color.get(val, TXT)))
+        t2.setStyle(TableStyle(style2))
+        elements.append(t2)
+
+        doc.build(elements, onFirstPage=draw_chrome, onLaterPages=draw_chrome)
         buffer.seek(0)
         return buffer.read()
 
