@@ -17,7 +17,7 @@ ENV/
 !.env.example
 
 # ===== Backups e temporarios =====
-*.bak
+*.bak*
 *.tmp
 *.orig
 *.swp
