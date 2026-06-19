@@ -13,6 +13,11 @@ router = APIRouter()
 async def process_checkout(data: SubscriptionCheckoutRequest, db: AsyncSession = Depends(get_db), user: Any = Depends(get_current_user), sdk: mercadopago.SDK = Depends(get_mp_sdk)):
     return await SubscriptionService.process_checkout(session=db, data=data, user=user, sdk=sdk)
 
+@router.post("/trial/start")
+async def start_trial(db: AsyncSession = Depends(get_db), user: Any = Depends(get_current_user)):
+    """Ativa o teste grátis de 7 dias (1 por conta). Não envolve pagamento."""
+    return await SubscriptionService.start_trial(session=db, user=user)
+
 @router.get("/my-subscription", response_model=SubscriptionResponse)
 async def read_subscription(
     db: Annotated[AsyncSession, Depends(get_db)],
