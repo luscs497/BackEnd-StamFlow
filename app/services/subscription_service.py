@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from typing import Any
 import mercadopago
 from decimal import Decimal
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 class SubscriptionService:
     @staticmethod
@@ -88,6 +88,12 @@ class SubscriptionService:
                         await session.delete(existing_subscription)
                         await session.flush()
                 
+                elif existing_subscription.status == SubscriptionStatus.trialing:
+                    # Usuário em teste grátis decidiu assinar: o trial (sem cobrança
+                    # no MP) é removido e o fluxo segue para criar a assinatura paga.
+                    await session.delete(existing_subscription)
+                    await session.flush()
+
         elif isinstance(user, Company):
             company_id = user.id
             if plan.type != PlanType.corporative:
@@ -251,6 +257,83 @@ class SubscriptionService:
             "status": mp_response.get("status")
         }
     
+    @staticmethod
+    async def start_trial(session: AsyncSession, user: Any) -> dict:
+        """
+        Ativa o teste grátis de 7 dias (produto completo, não demo).
+        Regras:
+          - apenas contas individuais (Client);
+          - 1 trial por conta/por vida (controlado por client.trial_used_at);
+          - bloqueado se já houver assinatura ativa ou trial em andamento.
+        Cria uma Subscription real com status=trialing e end_date = agora + 7 dias.
+        """
+        if not isinstance(user, Client):
+            raise HTTPException(
+                status_code=403,
+                detail="Apenas contas individuais podem iniciar o teste grátis."
+            )
+
+        # 1 trial por conta (por vida)
+        if user.trial_used_at is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Esta conta já utilizou o teste grátis."
+            )
+
+        # Não pode haver assinatura ativa ou trial em andamento
+        result = await session.execute(
+            select(Subscription)
+            .where(Subscription.client_id == user.id)
+            .order_by(Subscription.id.desc())
+        )
+        existing = result.scalars().first()
+        if existing and existing.status in (
+            SubscriptionStatus.active, SubscriptionStatus.trialing
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Você já possui um plano ou teste ativo."
+            )
+
+        # Plano-base do trial: o plano individual ativo mais barato
+        plan_result = await session.execute(
+            select(SubscriptionPlan)
+            .where(
+                SubscriptionPlan.type == PlanType.individual,
+                SubscriptionPlan.is_active.is_(True),
+            )
+            .order_by(SubscriptionPlan.price_in_cents.asc())
+        )
+        base_plan = plan_result.scalars().first()
+        if not base_plan:
+            raise HTTPException(
+                status_code=500,
+                detail="Nenhum plano individual disponível para o teste grátis."
+            )
+
+        now = datetime.now(timezone.utc)
+        trial = Subscription(
+            plan_id=base_plan.id,
+            client_id=user.id,
+            status=SubscriptionStatus.trialing,
+            end_date=now + timedelta(days=7),
+            license_quantity=1,
+            price_at_purchase=Decimal("0.00"),
+            max_managers_purchased=0,
+            max_employees_purchased=0,
+        )
+        session.add(trial)
+        user.trial_used_at = now
+        await session.commit()
+        await session.refresh(trial)
+
+        return {
+            "message": "Teste grátis de 7 dias ativado.",
+            "status": "trialing",
+            "expira_em": trial.end_date.isoformat(),
+            "painel_url": "https://painel.stamflow.com.br",
+        }
+
     @staticmethod
     async def read_subscription(session: AsyncSession, current_user: Any) -> Subscription:
         if isinstance(current_user, Client):
