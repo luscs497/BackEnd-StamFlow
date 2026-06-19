@@ -146,9 +146,14 @@ async def check_active_subscription(user: Any = Depends(get_current_user)):
     
     now_utc = datetime.now(timezone.utc)
     is_expired = subscription.end_date and subscription.end_date < now_utc
-    is_not_active = subscription.status != SubscriptionStatus.active.value 
+    # Libera tanto assinatura paga (ACTIVE) quanto teste grátis (TRIALING),
+    # desde que dentro da validade (end_date).
+    status_liberado = subscription.status in (
+        SubscriptionStatus.active.value,
+        SubscriptionStatus.trialing.value,
+    )
 
-    if is_expired or is_not_active:
+    if is_expired or not status_liberado:
         raise HTTPException(
             status_code=403,
             detail="Sua assinatura expirou ou está inativa. Realize o pagamento para continuar."
