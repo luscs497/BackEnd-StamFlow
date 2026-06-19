@@ -32,6 +32,11 @@ class Client(Base):
 
     criado_em = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Teste grátis de 7 dias: data em que a conta CONSUMIU o trial.
+    # Fica NULL para quem nunca usou; ao iniciar o trial vira a data atual.
+    # É o que garante a regra "1 trial por vida por conta".
+    trial_used_at = Column(DateTime(timezone=True), nullable=True)
+
     reports = relationship("DailyReport", back_populates="client", cascade="all, delete-orphan")
     subscription = relationship("Subscription", back_populates="client", uselist=False)
     company = relationship("Company", back_populates="clients")
