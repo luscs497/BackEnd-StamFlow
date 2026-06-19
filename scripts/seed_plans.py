@@ -1,12 +1,26 @@
 """
 Seed dos planos AVULSOS (individuais) — PREÇOS PROVISÓRIOS.
-Rode UMA vez: .venv/bin/python scripts/seed_plans.py
+Rode UMA vez:  .venv/bin/python scripts/seed_plans.py
 É idempotente: se um plano com o mesmo nome já existir, ele pula.
 Troque os preços (price_in_cents) quando definir os valores reais.
 """
+import os
+import sys
 import asyncio
-from sqlalchemy import select
 
+# Garante que a raiz do projeto está no path (permite "import app.*"
+# rodando o script de qualquer lugar, sem precisar de PYTHONPATH).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# IMPORTANTE: importar TODOS os models antes de consultar, para o SQLAlchemy
+# conseguir resolver as relationships entre eles (ex.: SubscriptionPlan -> Subscription).
+from app.models import (  # noqa: F401
+    company, client, manager, client_token, client_achievement,
+    ticket, ticket_message, daily_report, subscription,
+    subscription_plan, webhook, invite, enterprise_request,
+)
+
+from sqlalchemy import select
 from app.db.session import AsyncSessionLocal
 from app.models.subscription_plan import SubscriptionPlan, PlanType, PlanPeriod
 
@@ -29,11 +43,7 @@ async def main():
             if existe.scalars().first():
                 print(f"[skip] já existe: {p['name']}")
                 continue
-            db.add(SubscriptionPlan(
-                type=PlanType.individual,
-                is_active=True,
-                **p,
-            ))
+            db.add(SubscriptionPlan(type=PlanType.individual, is_active=True, **p))
             criados += 1
             print(f"[novo] {p['name']} - R$ {p['price_in_cents']/100:.2f}")
         await db.commit()
