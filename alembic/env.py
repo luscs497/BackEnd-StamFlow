@@ -37,6 +37,7 @@ from app.models.subscription import Subscription
 from app.models.subscription_plan import SubscriptionPlan
 from app.models.webhook import WebhookLog
 from app.models.invite import Invite
+from app.models.enterprise_request import EnterpriseRequest
 
 # Importa as configurações centralizadas (lê o .env)
 from app.core.config import settings
