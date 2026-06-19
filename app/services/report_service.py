@@ -26,8 +26,8 @@ from app.schemas.report import (
 # Imports para PDF (ReportLab)
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 class ReportService:
 
@@ -797,63 +797,60 @@ class ReportService:
 
         por_colaborador, resumo = ReportService._build_aggregates(data)
 
-        # ---- Paleta StamFlow (tema escuro) ----
-        BG = colors.HexColor("#0b1120")
-        CARD = colors.HexColor("#0f172a")
-        ROW = colors.HexColor("#111c34")
-        ROW_ALT = colors.HexColor("#0d1729")
-        LINE = colors.HexColor("#1e293b")
-        TXT = colors.HexColor("#e2e8f0")
-        MUT = colors.HexColor("#94a3b8")
-        GREEN = colors.HexColor("#34d399")
-        PURPLE = colors.HexColor("#a855f7")
-        CYAN = colors.HexColor("#38bdf8")
-        PINK = colors.HexColor("#ec4899")
-        AMBER = colors.HexColor("#f59e0b")
-        RED = colors.HexColor("#f87171")
-        WHITE = colors.HexColor("#ffffff")
+        # ---- Paleta StamFlow (tema escuro, refinada) ----
+        BG = colors.HexColor("#0b1120")        # fundo
+        PANEL = colors.HexColor("#0f172a")     # cartões / cabeçalho de tabela
+        ZEBRA = colors.HexColor("#0d182b")     # linha alternada (bem sutil)
+        HAIR = colors.HexColor("#1e293b")      # linhas finas
+        TXT = colors.HexColor("#e2e8f0")       # texto principal
+        MUT = colors.HexColor("#94a3b8")       # rótulos
+        FAINT = colors.HexColor("#64748b")     # rodapé / dicas
+        ACCENT = colors.HexColor("#34d399")    # único destaque (verde)
+        WHITE = colors.HexColor("#f8fafc")
 
-        GRAD = ["#38bdf8", "#a855f7", "#ec4899", "#f59e0b"]
+        GRAD = ["#38bdf8", "#a855f7", "#ec4899", "#f59e0b"]  # raio — só uma fita fina no topo
 
         PAGE_W, PAGE_H = A4
-        L_MARGIN = R_MARGIN = 34
-        CONTENT_W = PAGE_W - L_MARGIN - R_MARGIN  # 527.27 pt
+        L_MARGIN = R_MARGIN = 40
+        CONTENT_W = PAGE_W - L_MARGIN - R_MARGIN
 
         logo = ReportService._load_logo()
 
         def draw_chrome(canvas, doc):
             canvas.saveState()
-            # Fundo
             canvas.setFillColor(BG)
             canvas.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
-            # Faixa de gradiente do raio (cyan -> roxo -> rosa -> laranja)
+            # fina assinatura de marca no topo (3 pt)
             seg = PAGE_W / len(GRAD)
             for idx, c in enumerate(GRAD):
                 canvas.setFillColor(colors.HexColor(c))
-                canvas.rect(idx * seg, PAGE_H - 6, seg + 1, 6, fill=1, stroke=0)
-            # Rodapé
-            canvas.setFillColor(colors.HexColor("#475569"))
-            canvas.setFont("Helvetica", 8)
-            canvas.drawCentredString(
-                PAGE_W / 2, 24,
-                "Gerado automaticamente pelo StamFlow  •  Dados anonimizados para preservar a privacidade",
-            )
-            canvas.setFillColor(MUT)
-            canvas.drawRightString(PAGE_W - R_MARGIN, 24, f"Página {doc.page}")
+                canvas.rect(idx * seg, PAGE_H - 3, seg + 1, 3, fill=1, stroke=0)
+            # rodapé discreto, com linha fina acima
+            canvas.setStrokeColor(HAIR)
+            canvas.setLineWidth(0.5)
+            canvas.line(L_MARGIN, 40, PAGE_W - R_MARGIN, 40)
+            canvas.setFillColor(FAINT)
+            canvas.setFont("Helvetica", 7.5)
+            canvas.drawString(L_MARGIN, 28, "Gerado automaticamente pelo StamFlow")
+            canvas.drawCentredString(PAGE_W / 2, 28, "Dados anonimizados para preservar a privacidade")
+            canvas.drawRightString(PAGE_W - R_MARGIN, 28, f"Página {doc.page}")
             canvas.restoreState()
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(
             buffer, pagesize=A4,
-            topMargin=44, bottomMargin=46, leftMargin=L_MARGIN, rightMargin=R_MARGIN,
+            topMargin=48, bottomMargin=54, leftMargin=L_MARGIN, rightMargin=R_MARGIN,
             title="Relatório StamFlow", author="StamFlow",
         )
         elements = []
 
-        title_style = ParagraphStyle("t", fontName="Helvetica-Bold", fontSize=22, textColor=WHITE, leading=25)
-        sub_style = ParagraphStyle("s", fontName="Helvetica", fontSize=10, textColor=MUT, leading=14)
-        sec_style = ParagraphStyle("sec", fontName="Helvetica-Bold", fontSize=13, textColor=TXT, leading=16)
-        sec_hint = ParagraphStyle("sech", fontName="Helvetica", fontSize=8.5, textColor=MUT, leading=11)
+        title_style = ParagraphStyle("t", fontName="Helvetica-Bold", fontSize=18, textColor=WHITE, leading=22)
+        sub_style = ParagraphStyle("s", fontName="Helvetica", fontSize=9.5, textColor=MUT, leading=13)
+        sec_style = ParagraphStyle("sec", fontName="Helvetica-Bold", fontSize=11.5, textColor=TXT, leading=15)
+        sec_hint = ParagraphStyle("sech", fontName="Helvetica", fontSize=8, textColor=FAINT, leading=11)
+
+        def fmt_pct(v):
+            return f"{v}%" if v is not None else "—"
 
         # ---------- Cabeçalho (logo + título) ----------
         head_txt = [
@@ -868,8 +865,8 @@ class ReportService:
             try:
                 logo.seek(0)
                 iw, ih = ImageReader(logo).getSize()
-                disp_h = 46.0
-                disp_w = disp_h * (iw / ih) if ih else 46.0
+                disp_h = 40.0
+                disp_w = disp_h * (iw / ih) if ih else 40.0
                 logo.seek(0)
                 img = Image(logo, width=disp_w, height=disp_h)
                 header = Table(
@@ -889,39 +886,33 @@ class ReportService:
         else:
             elements.extend(head_txt)
 
-        elements.append(Spacer(1, 16))
+        elements.append(Spacer(1, 20))
 
-        # ---------- Cartões de resumo (KPIs) ----------
-        def kpi_table(rows_pairs, value_colors):
-            """rows_pairs: lista de (label, valor); 4 por linha."""
+        # ---------- Cartões de resumo (KPIs) — monocromáticos, 1 destaque ----------
+        def kpi_table(rows_pairs, accent_idx=()):
+            """rows_pairs: lista de (label, valor); 4 por linha. accent_idx destaca em verde."""
             labels = [p[0] for p in rows_pairs]
             values = [p[1] for p in rows_pairs]
-            tbl = Table(
-                [labels, values],
-                colWidths=[CONTENT_W / 4.0] * 4,
-            )
+            tbl = Table([labels, values], colWidths=[CONTENT_W / 4.0] * 4)
             st = [
-                ("BACKGROUND", (0, 0), (-1, -1), CARD),
+                ("BACKGROUND", (0, 0), (-1, -1), PANEL),
                 ("TEXTCOLOR", (0, 0), (-1, 0), MUT),
+                ("TEXTCOLOR", (0, 1), (-1, 1), WHITE),
                 ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 8),
-                ("FONTSIZE", (0, 1), (-1, 1), 15),
+                ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+                ("FONTSIZE", (0, 1), (-1, 1), 13),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("TOPPADDING", (0, 0), (-1, 0), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, 0), 2),
-                ("TOPPADDING", (0, 1), (-1, 1), 2),
-                ("BOTTOMPADDING", (0, 1), (-1, 1), 10),
-                ("BOX", (0, 0), (-1, -1), 0.6, LINE),
-                ("INNERGRID", (0, 0), (-1, -1), 0.6, LINE),
+                ("TOPPADDING", (0, 0), (-1, 0), 11),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 1),
+                ("TOPPADDING", (0, 1), (-1, 1), 1),
+                ("BOTTOMPADDING", (0, 1), (-1, 1), 11),
+                ("LINEAFTER", (0, 0), (-2, -1), 0.5, HAIR),
             ]
-            for ci, col in enumerate(value_colors):
-                st.append(("TEXTCOLOR", (ci, 1), (ci, 1), col))
+            for ci in accent_idx:
+                st.append(("TEXTCOLOR", (ci, 1), (ci, 1), ACCENT))
             tbl.setStyle(TableStyle(st))
             return tbl
-
-        def fmt_pct(v):
-            return f"{v}%" if v is not None else "—"
 
         elements.append(kpi_table(
             [
@@ -930,7 +921,7 @@ class ReportService:
                 ("POSTURA MÉDIA", fmt_pct(resumo["postura_media"])),
                 ("ÍNDICE DE HUMOR", fmt_pct(resumo["humor_media"])),
             ],
-            [CYAN, GREEN, PURPLE, PINK],
+            accent_idx=(1,),  # só a stamina média recebe destaque
         ))
         elements.append(Spacer(1, 8))
         elements.append(kpi_table(
@@ -940,37 +931,61 @@ class ReportService:
                 ("PAUSAS MENTAIS", str(resumo["pausas_total"])),
                 ("EXERCÍCIOS", str(resumo["exercicios_total"])),
             ],
-            [TXT, TXT, GREEN, GREEN],
         ))
-        elements.append(Spacer(1, 18))
+        elements.append(Spacer(1, 22))
+
+        # ---------- Helpers de tabela limpa (sem grade fechada) ----------
+        def clean_style(nrows, extra=None):
+            st = [
+                ("BACKGROUND", (0, 0), (-1, 0), PANEL),
+                ("TEXTCOLOR", (0, 0), (-1, 0), MUT),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+                ("FONTSIZE", (0, 1), (-1, -1), 8.5),
+                ("TEXTCOLOR", (0, 1), (-1, -1), TXT),
+                ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                ("ALIGN", (0, 0), (0, -1), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.6, HAIR),
+                ("LINEBELOW", (0, 1), (-1, -2), 0.25, HAIR),
+            ]
+            for ridx in range(2, nrows, 2):
+                st.append(("BACKGROUND", (0, ridx), (-1, ridx), ZEBRA))
+            if extra:
+                st.extend(extra)
+            return st
 
         # ---------- Distribuição de humor da equipe ----------
         elements.append(Paragraph("Distribuição de humor da equipe", sec_style))
         elements.append(Spacer(1, 8))
         dh = resumo["dist_humor"]
-        humor_rows = [
-            ["Feliz", "Neutro", "Triste", "Irritado"],
-            [f'{dh["happy"]}%', f'{dh["neutral"]}%', f'{dh["sad"]}%', f'{dh["angry"]}%'],
-        ]
-        ht = Table(humor_rows, colWidths=[CONTENT_W / 4.0] * 4)
+        ht = Table(
+            [
+                ["Feliz", "Neutro", "Triste", "Irritado"],
+                [f'{dh["happy"]}%', f'{dh["neutral"]}%', f'{dh["sad"]}%', f'{dh["angry"]}%'],
+            ],
+            colWidths=[CONTENT_W / 4.0] * 4,
+        )
         ht.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), CARD),
+            ("BACKGROUND", (0, 0), (-1, -1), PANEL),
             ("TEXTCOLOR", (0, 0), (-1, 0), MUT),
-            ("TEXTCOLOR", (0, 1), (0, 1), GREEN),
-            ("TEXTCOLOR", (1, 1), (1, 1), CYAN),
-            ("TEXTCOLOR", (2, 1), (2, 1), AMBER),
-            ("TEXTCOLOR", (3, 1), (3, 1), RED),
+            ("TEXTCOLOR", (0, 1), (-1, 1), TXT),
             ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 8),
-            ("FONTSIZE", (0, 1), (-1, 1), 14),
+            ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+            ("FONTSIZE", (0, 1), (-1, 1), 12),
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("TOPPADDING", (0, 0), (-1, -1), 8),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-            ("BOX", (0, 0), (-1, -1), 0.6, LINE),
-            ("INNERGRID", (0, 0), (-1, -1), 0.6, LINE),
+            ("TOPPADDING", (0, 0), (-1, 0), 9),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 1),
+            ("TOPPADDING", (0, 1), (-1, 1), 1),
+            ("BOTTOMPADDING", (0, 1), (-1, 1), 9),
+            ("LINEAFTER", (0, 0), (-2, -1), 0.5, HAIR),
         ]))
         elements.append(ht)
-        elements.append(Spacer(1, 18))
+        elements.append(Spacer(1, 22))
 
         # ---------- Resumo por colaborador ----------
         elements.append(Paragraph("Resumo por colaborador", sec_style))
@@ -985,29 +1000,13 @@ class ReportService:
                 f'{c["stamina"]}%', fmt_pct(c["postura"]), fmt_pct(c["humor"]),
                 str(c["pausas"]), str(c["exercicios"]),
             ])
-        ct = Table(colab_tbl, colWidths=[120, 38, 88, 62, 62, 56, 50, 50], repeatRows=1)
-        cstyle = [
-            ("BACKGROUND", (0, 0), (-1, 0), PURPLE),
-            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 9),
-            ("FONTSIZE", (0, 1), (-1, -1), 8.5),
-            ("TEXTCOLOR", (0, 1), (-1, -1), TXT),
-            ("TEXTCOLOR", (3, 1), (3, -1), GREEN),
-            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-            ("ALIGN", (0, 0), (0, -1), "LEFT"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-            ("INNERGRID", (0, 0), (-1, -1), 0.4, LINE),
-            ("BOX", (0, 0), (-1, -1), 0.4, LINE),
-        ]
-        for ridx in range(1, len(colab_tbl)):
-            cstyle.append(("BACKGROUND", (0, ridx), (-1, ridx), ROW if ridx % 2 == 1 else ROW_ALT))
-        ct.setStyle(TableStyle(cstyle))
+        ct = Table(colab_tbl, colWidths=[126, 40, 86, 60, 58, 52, 50, 48], repeatRows=1)
+        ct.setStyle(TableStyle(clean_style(
+            len(colab_tbl),
+            extra=[("TEXTCOLOR", (3, 1), (3, -1), ACCENT)],  # stamina em verde (único destaque)
+        )))
         elements.append(ct)
-        elements.append(Spacer(1, 18))
+        elements.append(Spacer(1, 22))
 
         # ---------- Detalhamento por registro ----------
         elements.append(Paragraph("Detalhamento por registro", sec_style))
@@ -1021,32 +1020,13 @@ class ReportService:
                 f'{r["stamina"]}%', fmt_pct(r["postura"]), fmt_pct(r["humor"]),
                 str(r["pausas"]), str(r["exercicios"]),
             ])
-        t = Table(table_data, colWidths=[112, 66, 64, 60, 60, 55, 50, 48], repeatRows=1)
-        style = [
-            ("BACKGROUND", (0, 0), (-1, 0), PURPLE),
-            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 9),
-            ("FONTSIZE", (0, 1), (-1, -1), 8.5),
-            ("TEXTCOLOR", (0, 1), (-1, -1), TXT),
-            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-            ("ALIGN", (0, 0), (0, -1), "LEFT"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-            ("INNERGRID", (0, 0), (-1, -1), 0.4, LINE),
-            ("BOX", (0, 0), (-1, -1), 0.4, LINE),
-        ]
-        # Colore a coluna de stamina conforme o nível
-        for ridx in range(1, len(table_data)):
-            style.append(("BACKGROUND", (0, ridx), (-1, ridx), ROW if ridx % 2 == 1 else ROW_ALT))
-            sval = data[ridx - 1]["stamina"]
-            scol = GREEN if sval >= 75 else (CYAN if sval >= 50 else (AMBER if sval >= 25 else RED))
-            style.append(("TEXTCOLOR", (3, ridx), (3, ridx), scol))
-        t.setStyle(TableStyle(style))
+        t = Table(table_data, colWidths=[118, 70, 66, 58, 58, 52, 48, 46], repeatRows=1)
+        t.setStyle(TableStyle(clean_style(
+            len(table_data),
+            extra=[("TEXTCOLOR", (3, 1), (3, -1), ACCENT)],
+        )))
         elements.append(t)
-        elements.append(Spacer(1, 18))
+        elements.append(Spacer(1, 22))
 
         # ---------- Ergonomia e humor por registro ----------
         elements.append(Paragraph("Ergonomia e humor por registro", sec_style))
@@ -1056,43 +1036,18 @@ class ReportService:
         ))
         elements.append(Spacer(1, 8))
 
-        status_color = {
-            "Excelente": GREEN, "Boa": CYAN, "Atenção": AMBER,
-            "Crítica": RED, "---": MUT, "—": MUT,
-        }
         header2 = ["Colaborador", "Ombro", "Cabeça", "Rotação", "Costas",
                    "Feliz", "Neutro", "Triste", "Irritado"]
         table2 = [header2]
         for r in data:
             table2.append([
                 r["colaborador"],
-                r.get("ombro") or "---", r.get("cabeca") or "---",
-                r.get("rotacao") or "---", r.get("costas") or "---",
+                r.get("ombro") or "—", r.get("cabeca") or "—",
+                r.get("rotacao") or "—", r.get("costas") or "—",
                 f'{r["feliz"]}%', f'{r["neutro"]}%', f'{r["triste"]}%', f'{r["irritado"]}%',
             ])
-        t2 = Table(table2, colWidths=[100, 58, 58, 58, 56, 46, 50, 46, 52], repeatRows=1)
-        style2 = [
-            ("BACKGROUND", (0, 0), (-1, 0), PURPLE),
-            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 8.5),
-            ("FONTSIZE", (0, 1), (-1, -1), 8),
-            ("TEXTCOLOR", (0, 1), (-1, -1), TXT),
-            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-            ("ALIGN", (0, 0), (0, -1), "LEFT"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-            ("INNERGRID", (0, 0), (-1, -1), 0.4, LINE),
-            ("BOX", (0, 0), (-1, -1), 0.4, LINE),
-        ]
-        for ridx in range(1, len(table2)):
-            style2.append(("BACKGROUND", (0, ridx), (-1, ridx), ROW if ridx % 2 == 1 else ROW_ALT))
-            for cidx in range(1, 5):  # status de ergonomia coloridos
-                val = table2[ridx][cidx]
-                style2.append(("TEXTCOLOR", (cidx, ridx), (cidx, ridx), status_color.get(val, TXT)))
-        t2.setStyle(TableStyle(style2))
+        t2 = Table(table2, colWidths=[104, 56, 56, 56, 54, 46, 50, 46, 52], repeatRows=1)
+        t2.setStyle(TableStyle(clean_style(len(table2))))
         elements.append(t2)
 
         doc.build(elements, onFirstPage=draw_chrome, onLaterPages=draw_chrome)
