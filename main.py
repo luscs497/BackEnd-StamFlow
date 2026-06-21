@@ -97,6 +97,7 @@ def create_app() -> FastAPI:
         
         # DOMÍNIOS DE PRODUÇÃO (HTTPS)
         "https://login.stamflow.com.br",
+        "https://conta.stamflow.com.br",
         "https://gestor.stamflow.com.br",
         "https://painel.stamflow.com.br",
         "https://user.stamflow.com.br",
