@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.routes import (auth, tickets, reports, companies, managers, subscriptions, subscription_plans, webhooks, invites)
+from app.api.routes import (auth, tickets, reports, companies, managers, subscriptions, subscription_plans, webhooks, invites, account)
 
 api_router = APIRouter()
 
@@ -12,3 +12,4 @@ api_router.include_router(subscriptions.router, prefix="/subscription", tags=["s
 api_router.include_router(subscription_plans.router, prefix="/subscription_plan", tags=["subscription_plans"])
 api_router.include_router(webhooks.router, prefix="/webhook", tags=["webhooks"])
 api_router.include_router(invites.router, prefix="/invite", tags=["invites"])
+api_router.include_router(account.router, prefix="/account", tags=["account"])
