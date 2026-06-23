@@ -239,7 +239,10 @@ class AuthService:
                 )
             
         elif isinstance(current_user, Manager):
-            if current_user.id != client.manager_id:
+            # Escopo compartilhado: qualquer gestor da empresa pode excluir
+            # qualquer colaborador da mesma empresa (consistente com a
+            # listagem da equipe, que também é por company_id).
+            if current_user.company_id != client.company_id:
                 raise HTTPException(
                     status_code=403,
                     detail="O usuário não tem permissão para realizar essa operação."
@@ -269,7 +272,9 @@ class AuthService:
             if isinstance(user, Company):
                 query = query.where(Client.company_id == user.id)
             elif isinstance(user, Manager):
-                query = query.where(Client.manager_id == user.id)
+                # Mesmo raciocínio do delete individual: escopo por empresa,
+                # não por manager_id, para ficar consistente com a listagem.
+                query = query.where(Client.company_id == user.company_id)
             result = await session.execute(query)
             await session.commit()
             

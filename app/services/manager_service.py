@@ -152,9 +152,13 @@ class ManagerService:
         await session.commit()
 
     @staticmethod
-    async def get_team(session: AsyncSession, manager: Manager):           
+    async def get_team(session: AsyncSession, manager: Manager):
         try:
-            result = await session.execute(select(Client).where(Client.manager_id == manager.id))
+            # Visão compartilhada: todos os colaboradores da EMPRESA, não só os
+            # que este gestor específico convidou (Client.manager_id). Antes,
+            # filtrar por manager_id escondia colaboradores convidados pela
+            # Company diretamente ou por outro gestor da mesma empresa.
+            result = await session.execute(select(Client).where(Client.company_id == manager.company_id))
             team = result.scalars().all()
             return list(team)
 

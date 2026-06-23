@@ -136,7 +136,7 @@ class InviteService:
             invite = result.scalar_one_or_none()
 
         elif isinstance(user, Manager):
-            result = await session.execute(select(Invite).where(Invite.id == invite_id).where(Invite.manager_id == user.id))
+            result = await session.execute(select(Invite).where(Invite.id == invite_id).where(Invite.company_id == user.company_id))
             invite = result.scalar_one_or_none()
 
         if not invite:
@@ -161,7 +161,7 @@ class InviteService:
                     detail="Você não possui permissão para excluir esse convite."
                 )
         elif isinstance(user, Manager):
-            if user.id != invite.manager_id:
+            if user.company_id != invite.company_id:
                 raise HTTPException(
                     status_code=403,
                     detail="Você não possui permissão para excluir esse convite."
@@ -180,7 +180,10 @@ class InviteService:
                 return list(invites)
             
             elif isinstance(user, Manager):
-                result = await session.execute(select(Invite).where(Invite.manager_id == user.id))
+                # Escopo compartilhado: todos os convites da empresa, não só
+                # os que este gestor especificamente enviou — mesmo
+                # raciocínio aplicado em ManagerService.get_team.
+                result = await session.execute(select(Invite).where(Invite.company_id == user.company_id))
                 invites = result.scalars().all()
                 return list(invites)
 
@@ -323,7 +326,7 @@ class InviteService:
             if isinstance(user, Company):
                 query = query.where(Invite.company_id == user.id)
             elif isinstance(user, Manager):
-                query = query.where(Invite.manager_id == user.id)
+                query = query.where(Invite.company_id == user.company_id)
             result = await session.execute(query)
             await session.commit()
             
