@@ -93,8 +93,17 @@ class TicketService:
         )
         session.add(new_msg)
 
-        # Atualiza a data de 'atualizado_em' do ticket
-        ticket.status = TicketStatus.em_andamento # Opcional: Mudar status ao responder? Vc decide.
+        # Regra de transição de status:
+        # - Gestor respondendo SEMPRE move para "em_andamento" (reconhece que está
+        #   cuidando do caso, independente do status anterior).
+        # - Cliente mandando mensagem só altera o status se o ticket estava
+        #   "concluido" (reabre para "em_andamento"). Se o ticket está "aberto"
+        #   (cliente mandando mais de uma mensagem antes de qualquer resposta) ou
+        #   já "em_andamento", o status permanece como está.
+        if author_type == MessageAuthor.gestor:
+            ticket.status = TicketStatus.em_andamento
+        elif ticket.status == TicketStatus.concluido:
+            ticket.status = TicketStatus.em_andamento
         # O SQLAlchemy atualiza o 'atualizado_em' sozinho devido ao onupdate=func.now() no model
 
         await session.commit()
