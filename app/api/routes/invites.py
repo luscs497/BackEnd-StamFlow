@@ -7,7 +7,8 @@ from app.schemas.invite import (
     InviteCreate,
     InviteResponse,
     InviteUpdate,
-    InviteBulkDelete
+    InviteBulkDelete,
+    InvitePublicPreview
 )
 from app.api.deps import get_current_user
 router = APIRouter()
@@ -37,6 +38,15 @@ async def delete_invites_bulk(
 @router.get("/invites", response_model=List[InviteResponse])
 async def get_all_invites(db: Annotated[AsyncSession, Depends(get_db)], current_user: Annotated[Any, Depends(get_current_user)]):
     return await InviteService.get_all_invites(db, current_user)
+
+@router.get("/by-token/{token}", response_model=InvitePublicPreview)
+async def get_invite_preview_by_token(db: Annotated[AsyncSession, Depends(get_db)], token: str):
+    """
+    Rota PÚBLICA (sem autenticação) usada pela página de criação de conta
+    (registerEmployee.html) para mostrar o e-mail do convidado e validar o
+    link antes do envio do formulário de cadastro.
+    """
+    return await InviteService.get_invite_preview_by_token(db, token)
 
 @router.get("/{invite_id}", response_model=InviteResponse)
 async def get_invite(db: Annotated[AsyncSession, Depends(get_db)], current_user: Annotated[Any, Depends(get_current_user)], invite_id: int):
