@@ -167,3 +167,62 @@ class ManagerService:
                 status_code=500,
                 detail="Não foi possível buscar o time do(a) gestor(a)."
             )
+
+    @staticmethod
+    async def get_team_with_status(session: AsyncSession, manager: Manager):
+        """
+        Visão unificada de colaboradores: mescla Clients já registrados
+        (status "ativo" — a única forma de existir um Client com company_id
+        preenchido é ter concluído o cadastro via convite) com Invites de
+        funcionário ainda pendentes (status "inativo" — convite enviado, mas
+        o destinatário não concluiu a criação da conta).
+
+        Não usamos os Invites com status "accepted" aqui: o Client correspondente
+        já cobre esse caso, e listar os dois lados duplicaria a mesma pessoa.
+        """
+        try:
+            company_id = manager.company_id
+
+            clients_result = await session.execute(
+                select(Client).where(Client.company_id == company_id)
+            )
+            clients = clients_result.scalars().all()
+
+            invites_result = await session.execute(
+                select(Invite).where(
+                    Invite.company_id == company_id,
+                    Invite.role == InviteRole.employee,
+                    Invite.status == InviteStatus.pending,
+                )
+            )
+            pending_invites = invites_result.scalars().all()
+
+            team = [
+                {
+                    "origin": "client",
+                    "origin_id": c.id,
+                    "email": c.email,
+                    "nome_completo": c.nome_completo,
+                    "status": "ativo",
+                    "criado_em": c.criado_em,
+                }
+                for c in clients
+            ] + [
+                {
+                    "origin": "invite",
+                    "origin_id": i.id,
+                    "email": i.email,
+                    "nome_completo": None,
+                    "status": "inativo",
+                    "criado_em": i.created_at,
+                }
+                for i in pending_invites
+            ]
+
+            return team
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail="Não foi possível buscar o time do(a) gestor(a)."
+            )
