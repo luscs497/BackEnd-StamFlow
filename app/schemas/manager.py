@@ -43,3 +43,11 @@ class ManagerUpdate(BaseModel):
             # re.sub(r'\D', '', v) substitui tudo que não for dígito (\D) por vazio ('')
             return re.sub(r'\D', '', v)
         return v
+
+# --- Uso de licença (para a tela de Colaboradores saber quantas vagas restam) ---
+class LicenseUsageResponse(BaseModel):
+    max_employees: int
+    used_employees: int  # clientes ativos + convites de funcionário pendentes
+    max_managers: int
+    used_managers: int   # gestores ativos + convites de gestor pendentes
+    subscription_active: bool
