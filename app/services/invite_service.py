@@ -62,7 +62,13 @@ class InviteService:
                 status_code=400,
                 detail="Já existe um convite ativo e pendente para este e-mail."
             )
-        
+
+        if await is_email_in_use(session, request.email):
+            raise HTTPException(
+                status_code=400,
+                detail=f"O e-mail {request.email} já está cadastrado no StamFlow."
+            )
+
         if request.role == InviteRole.manager:
             if isinstance(user, Manager):
                 raise HTTPException(
@@ -198,16 +204,34 @@ class InviteService:
         company = result.scalar_one_or_none()
         if not company:
             raise HTTPException(status_code=400, detail="Empresa não encontrada.")
-        
-        managers_to_add = sum(1 for req in requests if req.role == InviteRole.manager)
 
-        if managers_to_add > 0 and isinstance(user, Manager):
+        if isinstance(user, Manager) and any(req.role == InviteRole.manager for req in requests):
             raise HTTPException(
                 status_code=403,
                 detail="Apenas administradores da empresa podem convidar novos gestores."
             )
-        
-        employees_to_add = sum(1 for req in requests if req.role == InviteRole.employee)
+
+        # Primeiro separamos quem já tem e-mail em uso (conta avulsa existente,
+        # já é gestor/colaborador em algum lugar, ou já tem convite pendente)
+        # dos que podem seguir. Isso evita abortar o lote inteiro por causa de
+        # 1 e-mail problemático, e evita reservar licença para quem nem vai
+        # ser convidado de fato.
+        valid_requests = []
+        skipped_emails = []
+        for req in requests:
+            if await is_email_in_use(session, req.email):
+                skipped_emails.append(req.email)
+            else:
+                valid_requests.append(req)
+
+        if not valid_requests:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Nenhum convite foi enviado. E-mail(s) já cadastrado(s): {', '.join(skipped_emails)}."
+            )
+
+        managers_to_add = sum(1 for req in valid_requests if req.role == InviteRole.manager)
+        employees_to_add = sum(1 for req in valid_requests if req.role == InviteRole.employee)
 
         if managers_to_add > 0 or employees_to_add > 0:
             await InviteService._reserve_licenses(session, cid, employees_to_add=employees_to_add, managers_to_add=managers_to_add)
@@ -217,15 +241,7 @@ class InviteService:
         
         base_url = settings.BASE_URL 
 
-        for req in requests:
-
-            # Verifica se email já existe
-            if await is_email_in_use(session, req.email):
-                await session.rollback()
-                raise HTTPException(
-                    status_code=400,
-                    detail="Este e-mail já está cadastrado."
-                )
+        for req in valid_requests:
             token = secrets.token_urlsafe(32)
             
             new_invite = Invite(
@@ -266,8 +282,14 @@ class InviteService:
         for msg in messages_to_send:
             background_tasks.add_task(fm.send_message, msg) 
 
+        message = f"{len(invites_to_create)} convite(s) gerado(s) com sucesso e estão sendo enviados."
+        if skipped_emails:
+            message += f" E-mail(s) já cadastrado(s) e ignorado(s): {', '.join(skipped_emails)}."
+
         return {
-            "message": f"{len(invites_to_create)} convites gerados com sucesso e estão sendo enviados."
+            "message": message,
+            "invited": [req.email for req in valid_requests],
+            "skipped": skipped_emails,
         }
 
     @staticmethod
@@ -354,39 +376,61 @@ class InviteService:
         
         result = await session.execute(select(Company).where(Company.id == company_id))
         company = result.scalar_one_or_none()
-        if managers_to_add > 0 or employees_to_add > 0:
-            await InviteService._reserve_licenses(session, company_id, employees_to_add=employees_to_add, managers_to_add=managers_to_add)
-            
-        invites_to_create = []
-        messages_to_send = []
+
+        # Monta a lista de candidatos (nome, email, role, function_name,
+        # register_link) primeiro, depois separamos quem já tem e-mail em
+        # uso (conta avulsa existente, já é colaborador/gestor, ou já tem
+        # convite pendente) dos que seguem — em vez de abortar o lote
+        # inteiro por causa de 1 e-mail problemático no meio do CSV.
         base_url = settings.BASE_URL
-        
-        # Formato CSV para empresa -> Nome do convidado | E-mail | Cargo (Colaborador/Colaboradora/Gestor/Gestora)
-        # Formato CSV para gestor -> Nome do convidado | E-mail
+        candidates = []
         for row in valid_rows:
-            token = secrets.token_urlsafe(32)
             name = row[0].strip()
             email = row[1].strip()
-
             cargo = row[2].strip() if isinstance(user, Company) else "Colaborador(a)"
 
             if cargo in ["Gestor", "Gestora"]:
                 role = InviteRole.manager
                 function_name = "Gestor(a)"
-                register_link = f"{base_url}/registerManager.html?token={token}"
-
             else:
                 role = InviteRole.employee
                 function_name = "Colaborador(a)"
-                register_link = f"{base_url}/registerEmployee.html?token={token}"
 
-            # Verifica se email já existe
-            if await is_email_in_use(session, email):
-                await session.rollback()
-                raise HTTPException(
-                    status_code=400,
-                    detail="Este e-mail já está cadastrado."
-                )
+            candidates.append({"name": name, "email": email, "role": role, "function_name": function_name})
+
+        valid_candidates = []
+        skipped_emails = []
+        for c in candidates:
+            if await is_email_in_use(session, c["email"]):
+                skipped_emails.append(c["email"])
+            else:
+                valid_candidates.append(c)
+
+        if not valid_candidates:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Nenhum convite foi enviado. E-mail(s) já cadastrado(s): {', '.join(skipped_emails)}."
+            )
+
+        managers_to_add = sum(1 for c in valid_candidates if c["role"] == InviteRole.manager)
+        employees_to_add = sum(1 for c in valid_candidates if c["role"] == InviteRole.employee)
+
+        if managers_to_add > 0 or employees_to_add > 0:
+            await InviteService._reserve_licenses(session, company_id, employees_to_add=employees_to_add, managers_to_add=managers_to_add)
+            
+        invites_to_create = []
+        messages_to_send = []
+        
+        # Formato CSV para empresa -> Nome do convidado | E-mail | Cargo (Colaborador/Colaboradora/Gestor/Gestora)
+        # Formato CSV para gestor -> Nome do convidado | E-mail
+        for c in valid_candidates:
+            token = secrets.token_urlsafe(32)
+            name, email, role, function_name = c["name"], c["email"], c["role"], c["function_name"]
+
+            if role == InviteRole.manager:
+                register_link = f"{base_url}/registerManager.html?token={token}"
+            else:
+                register_link = f"{base_url}/registerEmployee.html?token={token}"
 
             new_invite = Invite(
                 email=email,
@@ -418,7 +462,16 @@ class InviteService:
         fm = FastMail(mail_conf)
         for msg in messages_to_send:
             background_tasks.add_task(fm.send_message, msg)
-        return {"message": "Arquivo CSV enviado."}
+
+        message = f"{len(invites_to_create)} convite(s) gerado(s) com sucesso a partir do CSV."
+        if skipped_emails:
+            message += f" E-mail(s) já cadastrado(s) e ignorado(s): {', '.join(skipped_emails)}."
+
+        return {
+            "message": message,
+            "invited": [c["email"] for c in valid_candidates],
+            "skipped": skipped_emails,
+        }
 
     @staticmethod
     async def _reserve_licenses(session: AsyncSession, company_id: int, employees_to_add: int = 0, managers_to_add: int = 0) -> None:
