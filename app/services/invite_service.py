@@ -11,6 +11,7 @@ from app.models.subscription import Subscription, SubscriptionStatus
 from app.models.invite import Invite, InviteRole, InviteStatus
 from app.schemas.invite import InviteCreate
 from app.services.utils import is_email_in_use, is_cpf_in_use
+from app.services.email_templates import build_invite_email_html
 
 from app.core.config import settings, mail_conf
 from fastapi import BackgroundTasks, UploadFile, File
@@ -81,7 +82,7 @@ class InviteService:
             token=token,
             company_id=cid,
             manager_id=manager_id,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=7)
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24)
         )
 
         session.add(new_invite)
@@ -96,18 +97,7 @@ class InviteService:
             function_name = "Colaborador(a)"
         
         # 4. Envia Email
-        html_body = f"""
-        <div style="font-family: Arial, sans-serif; color: #333;">
-            <h2 style="color: #34D399;">Convite para o StamFlow</h2>
-            <p>Olá,</p>
-            <p>Você foi convidado(a) para se juntar ao sistema StamFlow como <strong>{function_name}</strong></p>
-            <p>Clique no botão abaixo para criar sua conta e acessar a plataforma:</p>
-            <a href="{register_link}" style="background-color: #34D399; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0;">Aceitar Convite</a>
-            <p>Ou copie e cole este link no navegador:</p>
-            <p>{register_link}</p>
-            <p style="font-size: 12px; color: #777;">Este link expira em 7 dias.</p>
-        </div>
-        """
+        html_body = build_invite_email_html(register_link, function_name)
 
         message = MessageSchema(
             subject=f"Convite para ser {function_name} no StamFlow",
@@ -242,7 +232,7 @@ class InviteService:
                 email=req.email,
                 role=req.role,
                 status=InviteStatus.pending,
-                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
                 token=token,
                 company_id=cid,
                 manager_id=manager_id
@@ -256,18 +246,7 @@ class InviteService:
                 register_link = f"{base_url}/registerEmployee.html?token={token}"
                 function_name = "Funcionário(a)"
             
-            html_body = f"""
-            <div style="font-family: Arial, sans-serif; color: #333;">
-                <h2 style="color: #34D399;">Convite para o StamFlow</h2>
-                <p>Olá,</p>
-                <p>Você foi convidado(a) para se juntar ao sistema StamFlow como <strong>{function_name}</strong></p>
-                <p>Clique no botão abaixo para criar sua conta e acessar a plataforma:</p>
-                <a href="{register_link}" style="background-color: #34D399; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0;">Aceitar Convite</a>
-                <p>Ou copie e cole este link no navegador:</p>
-                <p>{register_link}</p>
-                <p style="font-size: 12px; color: #777;">Este link expira em 7 dias.</p>
-            </div>
-            """
+            html_body = build_invite_email_html(register_link, function_name)
             message = MessageSchema(
                 subject=f"Convite para ser {function_name} no StamFlow",
                 recipients=[req.email],
@@ -415,22 +394,11 @@ class InviteService:
                 token=token,
                 company_id=company_id,
                 manager_id=manager_id,
-                expires_at=datetime.now(timezone.utc) + timedelta(days=7)
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=24)
             )
             invites_to_create.append(new_invite)
 
-            html_body = f"""
-            <div style="font-family: Arial, sans-serif; color: #333;">
-                <h2 style="color: #34D399;">Convite para o StamFlow</h2>
-                <p>Olá, {name}</p>
-                <p>Você foi convidado(a) para se juntar ao sistema StamFlow como <strong>{function_name}</strong></p>
-                <p>Clique no botão abaixo para criar sua conta e acessar a plataforma:</p>
-                <a href="{register_link}" style="background-color: #34D399; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0;">Aceitar Convite</a>
-                <p>Ou copie e cole este link no navegador:</p>
-                <p>{register_link}</p>
-                <p style="font-size: 12px; color: #777;">Este link expira em 7 dias.</p>
-            </div>
-            """
+            html_body = build_invite_email_html(register_link, function_name, name=name)
             message = MessageSchema(
                 subject=f"Convite para ser {function_name} no StamFlow",
                 recipients=[email],
@@ -577,4 +545,26 @@ class InviteService:
             "used_managers": used_managers,
             "subscription_active": subscription_active,
         }
-        
+
+    @staticmethod
+    async def get_invite_preview_by_token(session: AsyncSession, token: str) -> Invite:
+        """
+        Busca um convite PENDENTE e não expirado pelo token, sem exigir
+        autenticação — usado pela página pública de criação de conta
+        (registerEmployee.html) para mostrar o e-mail do convidado antes do
+        cadastro, e para validar o link antes mesmo de o usuário preencher o
+        formulário.
+        """
+        result = await session.execute(select(Invite).where(Invite.token == token))
+        invite = result.scalar_one_or_none()
+
+        if not invite:
+            raise HTTPException(status_code=404, detail="Convite não encontrado.")
+
+        if invite.status != InviteStatus.pending:
+            raise HTTPException(status_code=400, detail="Esse convite já foi usado ou cancelado.")
+
+        if invite.expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="Esse convite expirou.")
+
+        return invite
