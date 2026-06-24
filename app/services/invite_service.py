@@ -68,18 +68,10 @@ class InviteService:
                     status_code=403,
                     detail="Apenas administradores da empresa podem convidar novos gestores."
                 )
-            if not await InviteService.can_add_manager(session, existing_company):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Limite de gestores atingido para seu plano atual."
-                )
-            
+            await InviteService._reserve_licenses(session, cid, managers_to_add=1)
+
         elif request.role == InviteRole.employee:
-            if not await InviteService.can_add_employee(session, existing_company):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Limite de funcionários atingido para seu plano atual."
-                )
+            await InviteService._reserve_licenses(session, cid, employees_to_add=1)
 
         token = secrets.token_urlsafe(32)
 
@@ -227,19 +219,8 @@ class InviteService:
         
         employees_to_add = sum(1 for req in requests if req.role == InviteRole.employee)
 
-        if managers_to_add > 0:
-            if not await InviteService.can_add_manager(session, company, managers_to_add):
-                raise HTTPException(
-                    status_code=403, 
-                    detail=f"Limite de gestores atingido. Você tentou convidar {managers_to_add} gestores, mas não há vagas suficientes."
-                )
-
-        if employees_to_add > 0:
-            if not await InviteService.can_add_employee(session, company, employees_to_add):
-                raise HTTPException(
-                    status_code=403, 
-                    detail=f"Limite de funcionários atingido. Você tentou convidar {employees_to_add} funcionários, mas não há vagas suficientes."
-                )
+        if managers_to_add > 0 or employees_to_add > 0:
+            await InviteService._reserve_licenses(session, cid, employees_to_add=employees_to_add, managers_to_add=managers_to_add)
 
         invites_to_create = []
         messages_to_send = []
@@ -394,19 +375,8 @@ class InviteService:
         
         result = await session.execute(select(Company).where(Company.id == company_id))
         company = result.scalar_one_or_none()
-        if managers_to_add > 0:
-            if not await InviteService.can_add_manager(session, company, managers_to_add):
-                raise HTTPException(
-                    status_code=403, 
-                    detail=f"Limite atingido. O CSV contém {managers_to_add} gestores, mas você não tem vagas suficientes."
-                )
-
-        if employees_to_add > 0:
-            if not await InviteService.can_add_employee(session, company, employees_to_add):
-                raise HTTPException(
-                    status_code=403, 
-                    detail=f"Limite atingido. O CSV contém {employees_to_add} funcionários, mas você não tem vagas suficientes."
-                )
+        if managers_to_add > 0 or employees_to_add > 0:
+            await InviteService._reserve_licenses(session, company_id, employees_to_add=employees_to_add, managers_to_add=managers_to_add)
             
         invites_to_create = []
         messages_to_send = []
@@ -483,6 +453,81 @@ class InviteService:
         return {"message": "Arquivo CSV enviado."}
 
     @staticmethod
+    async def _reserve_licenses(session: AsyncSession, company_id: int, employees_to_add: int = 0, managers_to_add: int = 0) -> None:
+        """
+        Verifica e "reserva" vagas de licença de forma segura contra concorrência.
+
+        Problema que isso resolve: can_add_employee/can_add_manager fazem um
+        SELECT COUNT simples. Se duas requisições de convite chegarem quase
+        juntas (duplo clique, dois gestores convidando ao mesmo tempo), as
+        duas poderiam ler a mesma contagem "atual", ambas passarem a
+        checagem, e juntas excederem o limite contratado — já que nenhuma
+        delas via o efeito da outra ainda.
+
+        SELECT ... FOR UPDATE trava a linha da Subscription até o fim da
+        transação (commit/rollback do caller). Uma segunda requisição
+        concorrente que tente o mesmo SELECT FOR UPDATE vai BLOQUEAR até a
+        primeira terminar — só então lê a contagem já atualizada. Isso
+        serializa as duas checagens, eliminando a janela de corrida.
+
+        Não comita aqui de propósito: o lock só deve ser liberado quando o
+        caller terminar de criar os Invites e comitar essa mesma transação.
+        """
+        stmt = select(Subscription).where(Subscription.company_id == company_id).with_for_update()
+        result = await session.execute(stmt)
+        subscription = result.scalar_one_or_none()
+
+        if not subscription or subscription.status != SubscriptionStatus.active.value:
+            raise HTTPException(
+                status_code=403,
+                detail="Não há uma assinatura ativa para esta empresa."
+            )
+
+        if managers_to_add > 0:
+            used_managers = await InviteService._count_managers_usage(session, company_id)
+            if used_managers + managers_to_add > subscription.max_managers_purchased:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Limite de gestores atingido. Você tentou convidar {managers_to_add} gestor(es), mas não há vagas suficientes."
+                )
+
+        if employees_to_add > 0:
+            used_employees = await InviteService._count_employees_usage(session, company_id)
+            if used_employees + employees_to_add > subscription.max_employees_purchased:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Limite de funcionários atingido. Você tentou convidar {employees_to_add} funcionário(s), mas não há vagas suficientes."
+                )
+
+    @staticmethod
+    async def _count_employees_usage(session: AsyncSession, company_id: int) -> int:
+        """Clientes ativos da empresa + convites de funcionário ainda pendentes."""
+        current_employees = await session.scalar(
+            select(func.count(Client.id)).where(Client.company_id == company_id)
+        ) or 0
+        pending_invites = await session.scalar(
+            select(func.count(Invite.id))
+            .where(Invite.company_id == company_id)
+            .where(Invite.role == InviteRole.employee)
+            .where(Invite.status == InviteStatus.pending)
+        ) or 0
+        return current_employees + pending_invites
+
+    @staticmethod
+    async def _count_managers_usage(session: AsyncSession, company_id: int) -> int:
+        """Gestores ativos da empresa + convites de gestor ainda pendentes."""
+        current_managers = await session.scalar(
+            select(func.count(Manager.id)).where(Manager.company_id == company_id)
+        ) or 0
+        pending_invites = await session.scalar(
+            select(func.count(Invite.id))
+            .where(Invite.company_id == company_id)
+            .where(Invite.role == InviteRole.manager)
+            .where(Invite.status == InviteStatus.pending)
+        ) or 0
+        return current_managers + pending_invites
+
+    @staticmethod
     async def can_add_employee(session: AsyncSession, company: Company, quantity: int = 1) -> bool:
 
         stmt = select(Subscription).where(Subscription.company_id == company.id)
@@ -491,16 +536,8 @@ class InviteService:
 
         if not subscription or subscription.status != SubscriptionStatus.active.value:
             return False
-        
-        current_employees = await session.scalar(select(func.count(Client.id)).where(Client.company_id == company.id)) or 0
-        pending_invites = await session.scalar(
-            select(func.count(Invite.id))
-            .where(Invite.company_id == company.id)
-            .where(Invite.role == InviteRole.employee)
-            .where(Invite.status == InviteStatus.pending)
-        ) or 0
 
-        final_quantity = current_employees + pending_invites + quantity
+        final_quantity = await InviteService._count_employees_usage(session, company.id) + quantity
         return final_quantity <= subscription.max_employees_purchased
 
     @staticmethod
@@ -512,15 +549,32 @@ class InviteService:
 
         if not subscription or subscription.status != SubscriptionStatus.active.value:
             return False
-        
-        current_managers = await session.scalar(select(func.count(Manager.id)).where(Manager.company_id == company.id)) or 0
-        pending_invites = await session.scalar(
-            select(func.count(Invite.id))
-            .where(Invite.company_id == company.id)
-            .where(Invite.role == InviteRole.manager)
-            .where(Invite.status == InviteStatus.pending)
-        ) or 0
 
-        final_quantity = current_managers + pending_invites + quantity
+        final_quantity = await InviteService._count_managers_usage(session, company.id) + quantity
         return final_quantity <= subscription.max_managers_purchased
+
+    @staticmethod
+    async def get_license_usage(session: AsyncSession, company_id: int) -> dict:
+        """
+        Retorna o uso atual de licença da empresa (quantos colaboradores/gestores
+        já ocupam vaga vs. o limite contratado). Usado pela tela de Colaboradores
+        para mostrar quantas vagas restam ANTES do gestor tentar convidar alguém,
+        em vez de só descobrir o limite ao receber um 403 do backend.
+        """
+        stmt = select(Subscription).where(Subscription.company_id == company_id)
+        result = await session.execute(stmt)
+        subscription = result.scalar_one_or_none()
+
+        subscription_active = bool(subscription) and subscription.status == SubscriptionStatus.active.value
+
+        used_employees = await InviteService._count_employees_usage(session, company_id)
+        used_managers = await InviteService._count_managers_usage(session, company_id)
+
+        return {
+            "max_employees": subscription.max_employees_purchased if subscription else 0,
+            "used_employees": used_employees,
+            "max_managers": subscription.max_managers_purchased if subscription else 0,
+            "used_managers": used_managers,
+            "subscription_active": subscription_active,
+        }
         
