@@ -201,7 +201,7 @@ class InviteService:
         
         managers_to_add = sum(1 for req in requests if req.role == InviteRole.manager)
 
-        if isinstance(user, Manager):
+        if managers_to_add > 0 and isinstance(user, Manager):
             raise HTTPException(
                 status_code=403,
                 detail="Apenas administradores da empresa podem convidar novos gestores."
