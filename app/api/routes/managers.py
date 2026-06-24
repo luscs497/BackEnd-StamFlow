@@ -3,13 +3,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Annotated, List
 from app.db.session import get_db
 from app.services.manager_service import ManagerService
+from app.services.invite_service import InviteService
 from app.models.manager import Manager
 from app.models.company import Company
 from app.schemas.auth import ClientResponse, TeamMemberResponse
 from app.schemas.manager import (
     ManagerCreate,
     ManagerResponse,
-    ManagerUpdate
+    ManagerUpdate,
+    LicenseUsageResponse
 )
 from app.api.deps import get_current_manager, get_current_company
 router = APIRouter()
@@ -40,6 +42,16 @@ async def get_team_full(db: Annotated[AsyncSession, Depends(get_db)], current_ma
     quem já depende do formato antigo.
     """
     return await ManagerService.get_team_with_status(db, current_manager)
+
+@router.get("/license-usage", response_model=LicenseUsageResponse)
+async def get_license_usage(db: Annotated[AsyncSession, Depends(get_db)], current_manager: Annotated[Manager, Depends(get_current_manager)]):
+    """
+    Uso atual de licença da empresa (quantas vagas de funcionário/gestor já
+    estão ocupadas vs. o limite contratado). A tela de Colaboradores usa isso
+    para avisar o gestor ANTES de ele tentar convidar alguém acima do limite,
+    em vez de só descobrir isso ao receber um erro do backend.
+    """
+    return await InviteService.get_license_usage(db, current_manager.company_id)
 
 @router.delete("/{manager_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_manager(db: Annotated[AsyncSession, Depends(get_db)], current_company: Annotated[Company, Depends(get_current_company)], manager_id: int):
