@@ -25,3 +25,11 @@ class InviteUpdate(BaseModel):
 
 class InviteBulkDelete(BaseModel):
     invite_ids: List[int]
+
+# --- Preview público (sem autenticação) para a página de criação de conta ---
+# Expõe o mínimo necessário para a tela renderizar o e-mail pré-preenchido
+# antes do cadastro: nada de id, company_id, manager_id ou o token em si.
+class InvitePublicPreview(BaseModel):
+    email: EmailStr
+    role: InviteRole
+    expires_at: datetime
