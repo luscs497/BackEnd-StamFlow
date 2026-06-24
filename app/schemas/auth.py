@@ -65,3 +65,17 @@ class ClientResponse(BaseModel):
 
 class ClientBulkDelete(BaseModel):
     client_ids: List[int]
+
+# --- Visão unificada de equipe (Colaboradores) ---
+# Mescla Clients já registrados (sempre "ativo") com Invites de funcionário
+# ainda pendentes (sempre "inativo" — o convidado recebeu o e-mail mas não
+# concluiu o cadastro). `origin_id` é o id na tabela de origem (clients.id ou
+# invites.id) e `origin` diz qual delas, para o frontend saber qual rota
+# chamar ao excluir (/auth/bulk vs /invite/bulk).
+class TeamMemberResponse(BaseModel):
+    origin: Literal["client", "invite"]
+    origin_id: int
+    email: EmailStr
+    nome_completo: Optional[str] = None
+    status: Literal["ativo", "inativo"]
+    criado_em: datetime
