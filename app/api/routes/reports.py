@@ -73,6 +73,7 @@ async def get_my_dashboard(
         client_ids=[current_client.id],
         start_date=start_date,
         end_date=end_date,
+        incluir_classificacao_no_ranking=True,
     )
 
 
