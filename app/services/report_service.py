@@ -212,8 +212,16 @@ class ReportService:
         db: AsyncSession,
         client_ids: list[int],
         start_date: date,
-        end_date: date
+        end_date: date,
+        incluir_classificacao_no_ranking: bool = False,
     ) -> DashboardResponse:
+        """
+        incluir_classificacao_no_ranking: quando True, "melhor_dia"/"pior_dia"
+        passam a incluir também o rótulo de classificação do dia
+        (ex.: "24/06 (82% — Excelente)"), em vez de só "24/06 (82%)".
+        Isolado por flag para não afetar o painel Gestor (/team-dashboard),
+        que reusa esta mesma função e ainda espera o formato antigo.
+        """
 
         query = select(DailyReport).where(
             DailyReport.client_id.in_(client_ids),
@@ -274,11 +282,17 @@ class ReportService:
         if start_date == end_date:
             tempos_abs = ReportService._calcular_tempos_absolutos(metrics_agg, total_seconds)
 
+        formatar_dia = (
+            ReportService._formatar_dia_ranking_com_classificacao
+            if incluir_classificacao_no_ranking
+            else ReportService._formatar_dia_ranking
+        )
+
         return DashboardResponse(
             stamina_media=f"{int(stamina_media)}% {ReportService._get_label_stamina(stamina_media)}",
             tempo_total_uso=ReportService._formatar_tempo(total_seconds),
-            melhor_dia=ReportService._formatar_dia_ranking(melhor_dia["date"], melhor_dia["stamina"]),
-            pior_dia=ReportService._formatar_dia_ranking(pior_dia["date"], pior_dia["stamina"]),
+            melhor_dia=formatar_dia(melhor_dia["date"], melhor_dia["stamina"]),
+            pior_dia=formatar_dia(pior_dia["date"], pior_dia["stamina"]),
             distribuicao_tempo=distribuicao,
             distribuicao_humor=dist_humor,
             detalhes_ergonomia=det_ergonomia,
@@ -429,11 +443,16 @@ class ReportService:
         ("sad", "Triste"),
         ("angry", "Irritado"),
     ]
+    # Chaves do JSONB (`perfeito/bom/ruim/critico`) são preservadas como
+    # identificadores internos para não quebrar dados históricos no banco.
+    # Os rótulos exibidos seguem o padrão único do sistema: as 4 faixas de
+    # 25% — Crítica (0-24%), Atenção (25-49%), Boa (50-74%), Excelente
+    # (75-100%).
     _NIVEIS = [
-        ("perfeito", "Perfeito"),
-        ("bom", "Bom"),
-        ("ruim", "Ruim"),
-        ("critico", "Crítico"),
+        ("perfeito", "Excelente"),
+        ("bom", "Boa"),
+        ("ruim", "Atenção"),
+        ("critico", "Crítica"),
     ]
 
     @staticmethod
@@ -557,13 +576,26 @@ class ReportService:
 
     @staticmethod
     def _score_categoria(counts: dict):
+        """
+        Score 0-100 de uma categoria a partir das contagens de amostras.
+
+        Pesos = ponto médio da faixa de cada nível (faixas de 25% cada):
+            critico   →  12  (faixa 0-24,  Crítica)
+            ruim      →  37  (faixa 25-49, Atenção)
+            bom       →  62  (faixa 50-74, Boa)
+            perfeito  →  87  (faixa 75-100, Excelente)
+
+        Assim, uma categoria com 100% de amostras "bom" pontua 62 → cai em
+        "Boa" (consistente). Antes, com peso 75, ela caía em "Excelente".
+        """
         total = sum(int(v or 0) for v in counts.values()) if counts else 0
         if total == 0:
             return None
         return (
-            int(counts.get("perfeito", 0) or 0) * 100 +
-            int(counts.get("bom", 0) or 0) * 75 +
-            int(counts.get("ruim", 0) or 0) * 35
+            int(counts.get("perfeito", 0) or 0) * 87 +
+            int(counts.get("bom", 0) or 0) * 62 +
+            int(counts.get("ruim", 0) or 0) * 37 +
+            int(counts.get("critico", 0) or 0) * 12
         ) / total
 
     @staticmethod
@@ -743,7 +775,7 @@ class ReportService:
         writer.writerow(["AMOSTRAS BRUTAS POR CATEGORIA (do campo metrics)"])
         writer.writerow([
             "Data", "Colaborador", "Categoria", "Tipo",
-            "Perfeito", "Bom", "Ruim", "Crítico", "Total",
+            "Excelente", "Boa", "Atenção", "Crítica", "Total",
         ])
         cat_labels = (
             [(k, lbl, "Postura") for k, lbl in ReportService._PARTES_POSTURA] +
@@ -1094,6 +1126,12 @@ class ReportService:
 
     @staticmethod
     def _calcular_stamina_0_100(metrics: dict, total_seconds: int) -> float:
+        """
+        Stamina geral (0-100) = 70% postura + 30% emoção.
+
+        Os pesos por nível de amostra são os pontos médios das 4 faixas de
+        25% (87/62/37/12), em escala 0..1 aqui. Veja _score_categoria.
+        """
         if total_seconds == 0:
             return 0
 
@@ -1110,9 +1148,10 @@ class ReportService:
                 total_k = sum(counts.values())
                 if total_k > 0:
                     val = (
-                        counts.get('perfeito', 0) * 1.0 +
-                        counts.get('bom', 0) * 0.75 +
-                        counts.get('ruim', 0) * 0.35
+                        counts.get('perfeito', 0) * 0.87 +
+                        counts.get('bom', 0) * 0.62 +
+                        counts.get('ruim', 0) * 0.37 +
+                        counts.get('critico', 0) * 0.12
                     ) / total_k
                     score_postura += val
                     valid_postura += 1
@@ -1124,9 +1163,10 @@ class ReportService:
                 total_k = sum(counts.values())
                 if total_k > 0:
                     val = (
-                        counts.get('perfeito', 0) * 1.0 +
-                        counts.get('bom', 0) * 0.75 +
-                        counts.get('ruim', 0) * 0.35
+                        counts.get('perfeito', 0) * 0.87 +
+                        counts.get('bom', 0) * 0.62 +
+                        counts.get('ruim', 0) * 0.37 +
+                        counts.get('critico', 0) * 0.12
                     ) / total_k
                     score_emocao += val
                     valid_emocao += 1
@@ -1182,6 +1222,13 @@ class ReportService:
 
     @staticmethod
     def _calcular_detalhes_ergonomia(metrics: dict) -> ErgonomicDetails:
+        """
+        Status textual de cada parte do corpo, no mesmo padrão de 4 faixas
+        de 25% usado em toda a aplicação:
+            Excelente: 75-100%   Boa: 50-74%
+            Atenção:   25-49%    Crítica: 0-24%
+        Pesos por amostra = pontos médios das faixas (87/62/37/12).
+        """
         flat = ReportService._achatar_metrics(metrics)
         parts_map = {
             "shoulder": "shoulder_status",
@@ -1203,15 +1250,15 @@ class ReportService:
                 result[result_key] = "---"
             else:
                 score = (
-                    data.get('perfeito', 0) * 100 +
-                    data.get('bom', 0) * 75 +
-                    data.get('ruim', 0) * 35 +
-                    data.get('critico', 0) * 0
+                    data.get('perfeito', 0) * 87 +
+                    data.get('bom', 0) * 62 +
+                    data.get('ruim', 0) * 37 +
+                    data.get('critico', 0) * 12
                 ) / total
                 
-                if score >= 80: label = "Excelente"
-                elif score >= 60: label = "Boa"
-                elif score >= 30: label = "Atenção"
+                if score >= 75: label = "Excelente"
+                elif score >= 50: label = "Boa"
+                elif score >= 25: label = "Atenção"
                 else: label = "Crítica"
                 
                 result[result_key] = label
@@ -1262,11 +1309,30 @@ class ReportService:
         return f"{d.strftime('%d/%m')} ({int(stamina)}%)"
 
     @staticmethod
+    def _formatar_dia_ranking_com_classificacao(d: date, stamina: float) -> str:
+        """
+        Mesmo formato de _formatar_dia_ranking, mas inclui a classificação
+        do dia (Crítica/Atenção/Boa/Excelente) dentro dos parênteses.
+        Usada apenas pelos painéis avulso/user (aba Relatórios), e não pelo
+        Gestor, que continua usando _formatar_dia_ranking sem alteração.
+        Ex.: "24/06 (82% — Excelente)"
+        """
+        if not d:
+            return "--"
+        label = ReportService._get_label_stamina(stamina)
+        return f"{d.strftime('%d/%m')} ({int(stamina)}% — {label})"
+
+    @staticmethod
     def _get_label_stamina(val: float) -> str:
+        """
+        Rótulo textual da stamina segundo o padrão único de 4 faixas de 25%:
+            Excelente: 75-100%   Boa: 50-74%
+            Atenção:   25-49%    Crítica: 0-24%
+        """
         if val >= 75: return "Excelente"
-        if val >= 50: return "Bom"
-        if val >= 25: return "Ruim"
-        return "Crítico"
+        if val >= 50: return "Boa"
+        if val >= 25: return "Atenção"
+        return "Crítica"
 
     @staticmethod
     def _empty_dashboard() -> DashboardResponse:
