@@ -10,11 +10,11 @@ from app.db.session import get_db
 from app.api.deps import get_current_user, get_current_client, get_current_manager
 from app.models.client import Client
 from app.models.manager import Manager
-from app.models.ticket import Ticket, TicketStatus
+from app.models.ticket import Ticket, TicketStatus, ReportTag
 from app.models.ticket_message import MessageAuthor
 from app.schemas.ticket import (
     TicketCreate, TicketResponse, TicketReply, 
-    TicketUpdateMessage, TicketUpdateStatus
+    TicketUpdateMessage, TicketUpdateStatus, TicketUpdateTag
 )
 from app.services.ticket_service import TicketService
 
@@ -93,6 +93,36 @@ async def update_ticket_status(
     result = await db.execute(query)
     ticket_atualizado = result.scalars().first()
     
+    return ticket_atualizado
+
+
+@router.patch("/{ticket_id}/tag", response_model=TicketResponse)
+async def update_ticket_tag(
+    ticket_id: int,
+    tag_data: TicketUpdateTag,
+    current_manager: Annotated[Manager, Depends(get_current_manager)],
+    db: Annotated[AsyncSession, Depends(get_db)]
+):
+    """
+    Permite ao gestor reclassificar a tag de qualquer Report da sua empresa,
+    independente da tag originalmente escolhida pelo colaborador.
+    """
+    ticket = await db.get(Ticket, ticket_id)
+
+    if not ticket or ticket.company_id != current_manager.company_id:
+        raise HTTPException(status_code=404, detail="Ticket não encontrado na sua empresa")
+
+    ticket.tag = tag_data.tag
+    await db.commit()
+
+    query = (
+        select(Ticket)
+        .options(selectinload(Ticket.messages))
+        .where(Ticket.id == ticket_id)
+    )
+    result = await db.execute(query)
+    ticket_atualizado = result.scalars().first()
+
     return ticket_atualizado
 
 
