@@ -22,7 +22,8 @@ class TicketService:
             client_id=user.id,
             company_id=user.company_id,
             assunto=data.assunto,
-            status=TicketStatus.aberto
+            status=TicketStatus.aberto,
+            tag=data.tag,
         )
         session.add(new_ticket)
         await session.flush() # Para gerar o ID do ticket antes de criar a mensagem
