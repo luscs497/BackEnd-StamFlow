@@ -1,7 +1,7 @@
 """migration011 - notifications
 
 Revision ID: ee78c1d40a9c
-Revises: 16261ed2862b
+Revises: 9f2c1a0e7b34
 Create Date: 2026-06-25 00:00:00.000000
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'ee78c1d40a9c'
-down_revision: Union[str, Sequence[str], None] = '16261ed2862b'
+down_revision: Union[str, Sequence[str], None] = '9f2c1a0e7b34'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

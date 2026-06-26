@@ -38,6 +38,7 @@ class Client(Base):
     trial_used_at = Column(DateTime(timezone=True), nullable=True)
 
     reports = relationship("DailyReport", back_populates="client", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="client", cascade="all, delete-orphan")
     subscription = relationship("Subscription", back_populates="client", uselist=False)
     company = relationship("Company", back_populates="clients")
     manager = relationship("Manager", back_populates="clients")
