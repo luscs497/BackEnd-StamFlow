@@ -1,46 +1,48 @@
-import enum
-from sqlalchemy import Column, BigInteger, String, DateTime, ForeignKey, Enum
-from sqlalchemy.orm import relationship # <--- IMPORTANTE
-from sqlalchemy.sql import func
+from pydantic import BaseModel
+from typing import List, Optional
+from datetime import datetime
+from app.models.ticket import TicketStatus, ReportTag
+from app.models.ticket_message import MessageAuthor
 
-from app.db.base import Base
+# --- ESTRUTURAS BÁSICAS ---
 
-class TicketStatus(str, enum.Enum):
-    aberto = "aberto"
-    em_andamento = "em_andamento"
-    concluido = "concluido"
+class TicketMessageSchema(BaseModel):
+    id: int
+    author_type: MessageAuthor
+    content: str
+    criado_em: datetime
 
-class Ticket(Base):
-    __tablename__ = "tickets"
+    model_config = {"from_attributes": True}
 
-    id = Column(BigInteger, primary_key=True, index=True)
+# --- CRIAÇÃO E EDIÇÃO ---
 
-    client_id = Column(
-        BigInteger,
-        ForeignKey("clients.id", ondelete="CASCADE"),
-        nullable=False
-    )
+class TicketCreate(BaseModel):
+    assunto: str
+    mensagem_inicial: str
+    tag: ReportTag = ReportTag.operational
 
-    company_id = Column(
-        BigInteger,
-        ForeignKey("companies.id", ondelete="CASCADE"),
-        nullable=False
-    )
+class TicketReply(BaseModel):
+    content: str
 
-    assunto = Column(String(120), nullable=False)
-    
-    status = Column(
-        Enum(TicketStatus, name="ticket_status", native_enum=True), 
-        nullable=False, 
-        server_default="aberto"
-    )
+class TicketUpdateMessage(BaseModel):
+    content: str
 
-    criado_em = Column(DateTime(timezone=True), server_default=func.now())
-    
-    atualizado_em = Column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now()
-    )
+class TicketUpdateStatus(BaseModel):
+    status: TicketStatus
 
-    messages = relationship("TicketMessage", back_populates="ticket", cascade="all, delete-orphan")
+class TicketUpdateTag(BaseModel):
+    tag: ReportTag
+
+# --- LEITURA (O que o Front recebe) ---
+
+class TicketResponse(BaseModel):
+    id: int
+    assunto: str
+    status: TicketStatus
+    tag: ReportTag
+    criado_em: datetime
+    atualizado_em: datetime
+    # Lista de mensagens dentro do ticket
+    messages: List[TicketMessageSchema] = []
+
+    model_config = {"from_attributes": True}
