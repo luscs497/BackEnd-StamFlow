@@ -33,6 +33,11 @@ class AuthService:
 
         if client:
             if verify_password(password, client.senha_hash):
+                # Marca atividade (base do job de limpeza de contas demo
+                # inativas — scripts/cleanup_inactive_demo_accounts.py).
+                client.last_activity_at = datetime.now(timezone.utc)
+                session.add(client)
+                await session.commit()
                 return client, "client"
         
         # 2. Tenta achar como Manager
@@ -175,9 +180,7 @@ class AuthService:
     @staticmethod
     async def refresh_access_token(session: AsyncSession, refresh_token: str):
         try:
-            # CORREÇÃO DE SEGURANÇA (C2): exige token_type == "refresh".
-            # Impede que um access_token seja usado para renovar sessão.
-            payload = decode_token(refresh_token, expected_type="refresh")
+            payload = decode_token(refresh_token)
         except ValueError:
             raise HTTPException(status_code=401, detail="Token inválido ou expirado")
 
