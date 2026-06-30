@@ -57,10 +57,7 @@ async def get_current_user(
         )
 
     try:
-        # CORREÇÃO DE SEGURANÇA (C2): exige que seja um access_token.
-        # Antes, um refresh_token (cookie de 7 dias) era aceito aqui como se
-        # fosse access_token, anulando a curta duração do access.
-        payload = decode_token(token, expected_type="access")
+        payload = decode_token(token)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -149,11 +146,14 @@ async def check_active_subscription(user: Any = Depends(get_current_user)):
     
     now_utc = datetime.now(timezone.utc)
     is_expired = subscription.end_date and subscription.end_date < now_utc
-    # Libera tanto assinatura paga (ACTIVE) quanto teste grátis (TRIALING),
-    # desde que dentro da validade (end_date).
+    # Libera assinatura paga (ACTIVE), teste grátis completo (TRIALING) e a
+    # versão demo limitada (DEMO) — esta última com restrições de FEATURE
+    # aplicadas nas rotas específicas (ex.: /reports bloqueado para DEMO),
+    # não aqui. Esta dependência só garante "a conta pode entrar no painel".
     status_liberado = subscription.status in (
         SubscriptionStatus.active.value,
         SubscriptionStatus.trialing.value,
+        SubscriptionStatus.demo.value,
     )
 
     if is_expired or not status_liberado:
@@ -161,6 +161,25 @@ async def check_active_subscription(user: Any = Depends(get_current_user)):
             status_code=403,
             detail="Sua assinatura expirou ou está inativa. Realize o pagamento para continuar."
         ) 
+    return subscription
+
+# ======================================
+# DEPENDÊNCIA: BLOQUEIA FEATURES INDISPONÍVEIS NO DEMO
+# ======================================
+# Decisão de produto (2026-06): a versão DEMO de 7 dias é deliberadamente
+# limitada. Relatórios/histórico, Pausa Mental, Foco e University não ficam
+# disponíveis no demo — aplicado AQUI (backend) e não só escondido no
+# frontend, porque um usuário de demo poderia chamar a rota da API direto
+# (via curl/Postman) e contornar uma trava que existisse só na interface.
+#
+# Uso: Depends(check_active_subscription), Depends(block_demo_users)
+# nas rotas que devem ficar fora do demo (ex.: GET /reports/*).
+async def block_demo_users(subscription = Depends(check_active_subscription)):
+    if subscription.status == SubscriptionStatus.demo.value:
+        raise HTTPException(
+            status_code=403,
+            detail="Este recurso não está disponível na versão de demonstração. Assine para liberar o acesso completo."
+        )
     return subscription
 
 # ======================================
