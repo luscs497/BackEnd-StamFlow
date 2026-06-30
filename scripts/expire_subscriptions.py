@@ -23,10 +23,14 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # importa todos os models para resolver as relationships entre eles
+# CORREÇÃO I2: faltava 'notification'. Client tem relationship("Notification"),
+# e sem importar este model o SQLAlchemy falha ao configurar o mapper com
+# "expression 'Notification' failed to locate a name" — exatamente o erro que
+# derrubava o stamflow-expire.service em produção (exit 1, status=failed).
 from app.models import (  # noqa: F401
     company, client, manager, client_token, client_achievement,
     ticket, ticket_message, daily_report, subscription,
-    subscription_plan, webhook, invite, enterprise_request,
+    subscription_plan, webhook, invite, enterprise_request, notification,
 )
 
 from sqlalchemy import select

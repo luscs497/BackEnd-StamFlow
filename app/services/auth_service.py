@@ -175,7 +175,9 @@ class AuthService:
     @staticmethod
     async def refresh_access_token(session: AsyncSession, refresh_token: str):
         try:
-            payload = decode_token(refresh_token)
+            # CORREÇÃO DE SEGURANÇA (C2): exige token_type == "refresh".
+            # Impede que um access_token seja usado para renovar sessão.
+            payload = decode_token(refresh_token, expected_type="refresh")
         except ValueError:
             raise HTTPException(status_code=401, detail="Token inválido ou expirado")
 

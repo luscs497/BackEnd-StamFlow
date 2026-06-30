@@ -59,3 +59,6 @@ Thumbs.db
 # Se o exemplo.txt for so um arquivo de teste/rascunho, descomente a linha abaixo
 # para nao versiona-lo:
 # exemplo.txt
+
+# Dumps do Postgres (gerados pelo backup-stamflow.sh) - nunca versionar
+backups/

@@ -20,7 +20,9 @@ from app.api.deps import get_current_user, verify_admin_token
 from app.models.client import Client
 from app.models.manager import Manager
 from app.models.company import Company
-from app.core.config import settings # Acessar configs de tempo de expiração
+from app.core.config import settings
+from app.core.limiter import limiter
+from app.middleware.csrf import generate_csrf_token  # CORREÇÃO C3
 
 router = APIRouter()
 
@@ -36,7 +38,9 @@ class UserUpdate(BaseModel):
     response_model=ClientResponse, 
     status_code=status.HTTP_201_CREATED
 )
+@limiter.limit("10/hour")
 async def register_client(
+    request: Request,
     client_data: ClientCreate,
     db: AsyncSession = Depends(get_db)
 ):
@@ -47,6 +51,7 @@ async def register_client(
 # 2. LOGIN (COOKIES GLOBAIS .STAMFLOW.COM.BR)
 # ======================================================================
 @router.post("/login", response_model=LoginResponse)
+@limiter.limit("10/minute")
 async def login(
     response: Response, # Injeção do objeto Response para setar cookies
     request: Request,
@@ -106,6 +111,19 @@ async def login(
         max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
     )
 
+    # CSRF Token (CORREÇÃO C3) — NÃO httponly: o JS dos painéis precisa lê-lo
+    # para injetar no header X-CSRF-Token em toda chamada de mutação.
+    # Gerado a cada login; renovado a cada refresh.
+    response.set_cookie(
+        key="csrf_token",
+        value=generate_csrf_token(),
+        httponly=False,   # intencional: JS precisa ler
+        secure=True,
+        samesite="lax",
+        domain=".stamflow.com.br",
+        max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
+    )
+
     # Resposta JSON (Sem tokens, apenas dados do usuário)
     user_email_display = user.email
 
@@ -145,10 +163,21 @@ async def refresh_token(
         key="access_token",
         value=new_access,
         httponly=True,
-        secure=True,    # OBRIGATÓRIO EM HTTPS
+        secure=True,
         samesite="lax",
-        domain=".stamflow.com.br", # MANTÉM O DOMÍNIO GLOBAL
+        domain=".stamflow.com.br",
         max_age=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
+
+    # CORREÇÃO C3: renova o csrf_token a cada refresh para rotação contínua
+    response.set_cookie(
+        key="csrf_token",
+        value=generate_csrf_token(),
+        httponly=False,
+        secure=True,
+        samesite="lax",
+        domain=".stamflow.com.br",
+        max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
     )
 
     return TokenResponse(message="Token renovado")
@@ -161,6 +190,8 @@ async def logout(response: Response):
     # Para apagar o cookie, precisamos passar os mesmos parâmetros de criação
     response.delete_cookie("access_token", domain=".stamflow.com.br", secure=True, httponly=True)
     response.delete_cookie("refresh_token", domain=".stamflow.com.br", secure=True, httponly=True)
+    # CORREÇÃO C3: apaga o csrf_token junto com os demais cookies de sessão
+    response.delete_cookie("csrf_token", domain=".stamflow.com.br", secure=True)
     return {"message": "Logout realizado com sucesso"}
 
 # ==============================================================================
@@ -264,51 +295,13 @@ async def update_user_me(
 # ==============================================================================
 # 6. ESQUECI MINHA SENHA
 # ==============================================================================
-@router.post("/forgot-password")
-async def forgot_password(
-    payload: dict = Body(...),
-    db: AsyncSession = Depends(get_db)
-):
-    email = payload.get("email")
-    if not email:
-        raise HTTPException(status_code=400, detail="Email ou Login necessário")
-
-    target_user = None
-    user_type = None
-
-    q_client = select(Client).where(Client.email == email)
-    r_client = await db.execute(q_client)
-    client = r_client.scalars().first()
-
-    q_manager = select(Manager).where(Manager.email == email)
-    r_manager = await db.execute(q_manager)
-    manager = r_manager.scalars().first()
-
-    if client:
-        target_user = client
-        user_type = "client"
-    elif manager:
-        target_user = manager
-        user_type = "manager"
-    else:
-        q_company = select(Company).where(Company.email == email)
-        r_company = await db.execute(q_company)
-        company = r_company.scalars().first()
-        if company:
-            target_user = company
-            user_type = "company"
-
-    if not target_user:
-        return {"message": "Se o usuário existir, um link foi enviado."}
-
-    # Nota: A lógica real de envio de e-mail está no main.py ou service, 
-    # aqui mantemos o log para debug caso necessário.
-    print(f"==========================================")
-    print(f"📧 RECUPERAÇÃO DE SENHA ({user_type})")
-    print(f"👤 Usuário: {email} (ID: {target_user.id})")
-    print(f"==========================================")
-
-    return {"message": "Link de recuperação enviado."}
+# REMOVIDO (correção I3): esta rota era uma SEGUNDA implementação de
+# /auth/forgot-password que apenas dava print() do e-mail e do ID do usuário
+# no stdout/journal (vazamento de PII nos logs) e NÃO enviava e-mail algum.
+# A implementação real e funcional — que de fato gera o token e dispara o
+# e-mail via FastMail, agora com rate limiting — está em main.py.
+# Manter as duas era um risco: dependendo da ordem de registro, a rota inócua
+# poderia "vencer" a funcional. Removida para deixar uma única fonte da verdade.
 
 # ==============================================================================
 # 6. DELETAR CLIENTS EM MASSA

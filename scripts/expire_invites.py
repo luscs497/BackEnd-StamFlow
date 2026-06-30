@@ -29,10 +29,13 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # importa todos os models para resolver as relationships entre eles
+# CORREÇÃO I2: faltava 'notification' (mesmo motivo do expire_subscriptions —
+# Client.notifications = relationship("Notification") quebra o mapper se este
+# model não for importado).
 from app.models import (  # noqa: F401
     company, client, manager, client_token, client_achievement,
     ticket, ticket_message, daily_report, subscription,
-    subscription_plan, webhook, invite, enterprise_request,
+    subscription_plan, webhook, invite, enterprise_request, notification,
 )
 
 from sqlalchemy import select

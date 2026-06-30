@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status, BackgroundTasks, File, UploadFile
+from fastapi import APIRouter, Depends, status, BackgroundTasks, File, UploadFile, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Annotated, List, Any
 from app.db.session import get_db
@@ -11,6 +11,7 @@ from app.schemas.invite import (
     InvitePublicPreview
 )
 from app.api.deps import get_current_user
+from app.core.limiter import limiter  # CORREÇÃO C1: rate limiting
 router = APIRouter()
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
@@ -40,11 +41,16 @@ async def get_all_invites(db: Annotated[AsyncSession, Depends(get_db)], current_
     return await InviteService.get_all_invites(db, current_user)
 
 @router.get("/by-token/{token}", response_model=InvitePublicPreview)
-async def get_invite_preview_by_token(db: Annotated[AsyncSession, Depends(get_db)], token: str):
+@limiter.limit("20/minute")
+async def get_invite_preview_by_token(request: Request, db: Annotated[AsyncSession, Depends(get_db)], token: str):
     """
     Rota PÚBLICA (sem autenticação) usada pela página de criação de conta
     (registerEmployee.html) para mostrar o e-mail do convidado e validar o
     link antes do envio do formulário de cadastro.
+
+    CORREÇÃO C1: rate limit por IP. O token é secrets.token_urlsafe(32)
+    (forte, inviável de adivinhar por força bruta), mas o limite impede
+    varredura automatizada e abuso da rota pública.
     """
     return await InviteService.get_invite_preview_by_token(db, token)
 

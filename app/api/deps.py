@@ -57,7 +57,10 @@ async def get_current_user(
         )
 
     try:
-        payload = decode_token(token)
+        # CORREÇÃO DE SEGURANÇA (C2): exige que seja um access_token.
+        # Antes, um refresh_token (cookie de 7 dias) era aceito aqui como se
+        # fosse access_token, anulando a curta duração do access.
+        payload = decode_token(token, expected_type="access")
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

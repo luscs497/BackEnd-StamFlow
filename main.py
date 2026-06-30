@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,13 @@ from fastapi_mail import FastMail, MessageSchema, MessageType
 
 # Importamos as configurações centralizadas
 from app.core.config import settings, mail_conf
+
+# CORREÇÃO C1 (rate limiting): limiter central + handler de erro 429
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from app.core.limiter import limiter
+from app.middleware.csrf import CSRFMiddleware  # CORREÇÃO C3
 
 # ==================================================================
 # IMPORTANTE: Importamos os modelos aqui para que o SQLAlchemy
@@ -79,6 +86,15 @@ def create_app() -> FastAPI:
         description="Backend do sistema StamFlow"
     )
 
+    # CORREÇÃO C1: registra o rate limiter no app.
+    # - app.state.limiter é exigido pelo slowapi para resolver os decorators.
+    # - O handler converte estouros em HTTP 429 (Too Many Requests).
+    # - O SlowAPIMiddleware aplica os limites declarados por rota.
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
+    app.add_middleware(CSRFMiddleware)  # CORREÇÃO C3: valida X-CSRF-Token em mutações
+
     # ==================================================================
     # CONFIGURAÇÃO DE CORS (ATUALIZADA)
     # ==================================================================
@@ -109,8 +125,11 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=origins, 
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        # CORREÇÃO I4: antes era allow_methods=["*"] e allow_headers=["*"].
+        # Combinado com allow_credentials=True, isso é mais permissivo que o
+        # necessário. Restringimos ao que a aplicação de fato usa.
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Admin-Token", "X-CSRF-Token"],
     )
 
     # ==================================================================
@@ -118,9 +137,10 @@ def create_app() -> FastAPI:
     # ==================================================================
     
     @app.post("/auth/forgot-password", status_code=200)
-    async def forgot_password(request: PasswordRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    @limiter.limit("5/hour")
+    async def forgot_password(request: Request, body: PasswordRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
         # 1. Verifica se o cliente existe
-        query = select(Client).where(Client.email == request.email)
+        query = select(Client).where(Client.email == body.email)
         result = await db.execute(query)
         client = result.scalars().first()
         
@@ -180,12 +200,13 @@ def create_app() -> FastAPI:
         return {"message": "Instruções enviadas para seu e-mail."}
 
     @app.post("/auth/reset-password", status_code=200)
-    async def reset_password(request: PasswordReset, db: AsyncSession = Depends(get_db)):
+    @limiter.limit("10/hour")
+    async def reset_password(request: Request, body: PasswordReset, db: AsyncSession = Depends(get_db)):
         # 1. Valida Token
-        email = verify_reset_token(request.token)
+        email = verify_reset_token(body.token)
 
         # 2. Gera Hash da nova senha
-        new_hash = get_password_hash(request.new_password)
+        new_hash = get_password_hash(body.new_password)
 
         # 3. Atualiza no Banco
         stmt = (
