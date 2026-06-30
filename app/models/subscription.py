@@ -11,6 +11,11 @@ class SubscriptionStatus(str, enum.Enum):
     unpaid = "UNPAID"
     canceled = "CANCELED"
     incomplete = "INCOMPLETE"
+    # DEMO (nova decisão de produto): versão gratuita de 7 dias, DELIBERADAMENTE
+    # limitada (sem Pausa Mental, Foco, University ou Relatórios; exercícios
+    # guiados restritos) e sem persistir métricas de uso reais. Distinto de
+    # TRIALING (reservado para um eventual teste grátis do produto completo).
+    demo = "DEMO"
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
