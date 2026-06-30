@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.api.deps import get_current_client, get_current_manager
+from app.api.deps import get_current_client, get_current_manager, block_demo_users
 from app.models.client import Client
 from app.models.manager import Manager
 
@@ -67,6 +67,7 @@ async def get_my_dashboard(
     db: Annotated[AsyncSession, Depends(get_db)],
     start_date: date = Query(...),
     end_date: date = Query(...),
+    _subscription = Depends(block_demo_users),  # 403 para contas DEMO (decisão de produto)
 ):
     return await ReportService.get_dashboard_data(
         db=db,
