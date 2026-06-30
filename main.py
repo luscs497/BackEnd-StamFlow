@@ -117,6 +117,10 @@ def create_app() -> FastAPI:
         "https://painel.stamflow.com.br",
         "https://user.stamflow.com.br",
         "https://painel-empregado.stamflow.com.br",
+        # CORREÇÃO: domínio do painel demo (decisão de produto, 2026-06).
+        # Sem isso, o navegador bloqueia toda chamada do demo.stamflow.com.br
+        # para a API antes de qualquer lógica do backend ser executada.
+        "https://demo.stamflow.com.br",
         "https://stamflow.com.br",
         "https://www.stamflow.com.br"
     ]

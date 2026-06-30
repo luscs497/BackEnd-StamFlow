@@ -57,6 +57,10 @@ CSRF_EXEMPT_PREFIXES = (
     "/auth/refresh",
     "/auth/register",
     "/webhook",
+    # CORREÇÃO: /demo/signup é pré-autenticação (cria conta nova, ainda não
+    # existe cookie de sessão/csrf_token nesse momento) — mesmo motivo de
+    # /auth/register estar isento.
+    "/demo",
 )
 
 

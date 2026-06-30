@@ -56,6 +56,7 @@ class AccountService:
             conds.append(Subscription.company_id == company_id)
 
         assinatura = None
+        sub_status_atual = None  # usado por panels_for_user para decidir o link do painel demo
         if conds:
             res = await session.execute(
                 select(Subscription)
@@ -65,6 +66,7 @@ class AccountService:
             )
             sub = res.scalars().first()
             if sub:
+                sub_status_atual = _enum_val(sub.status)
                 plano = None
                 if sub.plan:
                     plano = {
@@ -94,5 +96,8 @@ class AccountService:
             "conta": conta,
             "assinatura": assinatura,
             "trial": trial,
-            "paineis": panels_for_user(user),
+            # CORREÇÃO: passa o status da subscription para que conta DEMO
+            # receba o link do painel demo (demo.stamflow.com.br), não o do
+            # painel avulso pagante.
+            "paineis": panels_for_user(user, subscription_status=sub_status_atual),
         }
