@@ -82,19 +82,49 @@ class WebhookService:
     
     @staticmethod
     async def already_processed(db: AsyncSession, topic: str | None, resource_id: str | None) -> bool:
+        # Idempotência: o MP reenvia o MESMO webhook várias vezes de propósito
+        # (garantia de entrega). Consideramos "já processado" se existe registro
+        # em qualquer status TERMINAL (success, ignored ou error) para o mesmo
+        # (topic, resource_id). Não barramos por 'processing', pois esse é um
+        # estado transitório — se um webhook travou em processing por um crash,
+        # queremos que um reenvio possa retomá-lo.
+        # Antes: só considerava 'success', o que deixava reenvios de webhooks
+        # terminados como 'ignored' colidirem na constraint única
+        # (topic, resource_id, status) e estourarem 500 no commit.
         if not topic or not resource_id:
             return False
-        
+
         stmt = (
             select(WebhookLog.id)
             .where(WebhookLog.topic == topic)
             .where(WebhookLog.resource_id == str(resource_id))
-            .where(WebhookLog.status == WebhookStatus.success)
+            .where(WebhookLog.status.in_([
+                WebhookStatus.success,
+                WebhookStatus.ignored,
+                WebhookStatus.error,
+            ]))
             .limit(1)
         )
 
         result = await db.execute(stmt)
         return result.scalar_one_or_none() is not None
+
+    @staticmethod
+    async def _safe_commit(db: AsyncSession) -> bool:
+        """
+        Commit que trata IntegrityError da constraint única de webhook_logs
+        como caso benigno de duplicidade (dois webhooks idênticos processados
+        quase simultaneamente, escapando da checagem already_processed).
+        Retorna True se comitou, False se era duplicado (já rolou back).
+        Qualquer outro erro é propagado normalmente.
+        """
+        try:
+            await WebhookService._safe_commit(db)
+            return True
+        except IntegrityError:
+            await db.rollback()
+            logger.info("Webhook duplicado (corrida) — ignorando com segurança.")
+            return False
 
     @staticmethod
     async def mark_webhook_error(
@@ -168,7 +198,7 @@ class WebhookService:
             webhook_log.status = WebhookStatus.ignored
             webhook_log.error_message = "Sem resource_id."
             logger.info("Webhook ignorado: Sem resource_id.")
-            await db.commit()
+            await WebhookService._safe_commit(db)
             return JSONResponse({"status": "ignored"}, status_code=200)
 
         # Mensalidade cobrada no cartão
@@ -178,7 +208,7 @@ class WebhookService:
                 if payment_info.get("status") == 404:
                     webhook_log.status = WebhookStatus.ignored
                     webhook_log.error_message = "Pagamento não encontrado."
-                    await db.commit()                
+                    await WebhookService._safe_commit(db)                
                     return JSONResponse(content={"status": "ignored"}, status_code=200)
                 
                 if payment_info.get("status") not in [200, 201]:
@@ -225,7 +255,7 @@ class WebhookService:
                                 db_subscription.end_date = now
                         
                 webhook_log.status = WebhookStatus.success
-                await db.commit()
+                await WebhookService._safe_commit(db)
                 return JSONResponse({"status": "success"}, status_code=200)
             
             except Exception as e:
@@ -253,7 +283,7 @@ class WebhookService:
                 if sub_info.get("status") == 404:
                     webhook_log.status = WebhookStatus.ignored
                     webhook_log.error_message = "Preapproval não encontrado."
-                    await db.commit()
+                    await WebhookService._safe_commit(db)
                     return JSONResponse({"status": "ignored"}, status_code=200)
                 
                 if sub_info.get("status") not in [200, 201]:
@@ -291,7 +321,7 @@ class WebhookService:
                             db_subscription.end_date = now
                 
                 webhook_log.status = WebhookStatus.success
-                await db.commit()
+                await WebhookService._safe_commit(db)
                 return JSONResponse({"status": "success"}, status_code=200)
             
             except Exception as e:
@@ -312,6 +342,6 @@ class WebhookService:
             # Mensagem para informar que o webhook ainda não foi entregue
             webhook_log.status = WebhookStatus.ignored
             webhook_log.error_message = "Webhook ainda não entregue."
-            await db.commit()
+            await WebhookService._safe_commit(db)
             logger.info("Tópico de webhook ainda não entregue.", extra={"topic": topic, "resource_id": resource_id})
         return JSONResponse(content={"status": "success"}, status_code=200)
