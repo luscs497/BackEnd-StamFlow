@@ -52,7 +52,7 @@ class WebhookService:
     
         # Parseia "ts=...;v1=..."
         parts: dict[str, str] = {}
-        for segment in x_signature.split(";"):
+        for segment in x_signature.split(","):  # MP separa os campos do x-signature por VIRGULA, nao ponto-e-virgula
             if "=" in segment:
                 k, v = segment.split("=", 1)
                 parts[k.strip()] = v.strip()
